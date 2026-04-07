@@ -8,6 +8,7 @@ import time
 from PyQt6 import QtWidgets
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
+    QButtonGroup,
     QHBoxLayout,
     QVBoxLayout,
     QProgressDialog,
@@ -18,6 +19,9 @@ from anylabeling.views.labeling.logger import logger
 from anylabeling.views.labeling.widgets import Popup
 from anylabeling.views.labeling.utils.qt import new_icon_path
 from anylabeling.views.labeling.utils.style import *
+from anylabeling.views.labeling.widgets.open_project_dialog import (
+    list_immediate_subdirs,
+)
 
 
 class ExportThread(QThread):
@@ -31,6 +35,10 @@ class ExportThread(QThread):
         save_path,
         mode,
         prefix=None,
+        label_files=None,
+        coco_image_name_fn=None,
+        odvg_filename_fn=None,
+        vlm_image_name_fn=None,
     ):
         super().__init__()
         self.converter = converter
@@ -39,6 +47,10 @@ class ExportThread(QThread):
         self.save_path = save_path
         self.mode = mode
         self.prefix = prefix
+        self.label_files = label_files
+        self.coco_image_name_fn = coco_image_name_fn
+        self.odvg_filename_fn = odvg_filename_fn
+        self.vlm_image_name_fn = vlm_image_name_fn
 
     def run(self):
         try:
@@ -50,18 +62,26 @@ class ExportThread(QThread):
                     self.label_dir_path,
                     self.save_path,
                     self.prefix,
+                    image_name_fn=self.vlm_image_name_fn,
                 )
             elif self.mode == "mot":
                 self.converter.custom_to_mot(
-                    self.label_dir_path, self.save_path
+                    self.label_dir_path,
+                    self.save_path,
+                    self.label_files,
                 )
             elif self.mode == "mots":
                 self.converter.custom_to_mots(
-                    self.label_dir_path, self.save_path
+                    self.label_dir_path,
+                    self.save_path,
+                    self.label_files,
                 )
             elif self.mode == "odvg":
                 self.converter.custom_to_odvg(
-                    self.image_list, self.label_dir_path, self.save_path
+                    self.image_list,
+                    self.label_dir_path,
+                    self.save_path,
+                    self.odvg_filename_fn,
                 )
             else:
                 self.converter.custom_to_coco(
@@ -69,6 +89,7 @@ class ExportThread(QThread):
                     self.label_dir_path,
                     self.save_path,
                     self.mode,
+                    coco_image_name_fn=self.coco_image_name_fn,
                 )
             self.finished.emit(True, "")
         except Exception as e:
@@ -91,8 +112,188 @@ def _check_filename_exist(self):
     return True
 
 
-def export_yolo_annotation(self, mode):
-    if not _check_filename_exist(self):
+def _check_export_scope(self, scope="folder"):
+    """scope: 'folder' = current task images; 'project' = all images under project_root."""
+    if not self.may_continue():
+        return False
+    if scope == "project":
+        root = getattr(self, "project_root", None)
+        if not root or not osp.isdir(root):
+            popup = Popup(
+                self.tr(
+                    "Please open a project first (File → Open Project), "
+                    "then use Export Project."
+                ),
+                self,
+                icon=new_icon_path("warning", "svg"),
+            )
+            popup.show_popup(self, position="center")
+            return False
+        paths = self.collect_project_image_paths()
+        if not paths:
+            popup = Popup(
+                self.tr("No images found in project subfolders."),
+                self,
+                icon=new_icon_path("warning", "svg"),
+            )
+            popup.show_popup(self, position="center")
+            return False
+        return True
+    return _check_filename_exist(self)
+
+
+def _resolve_export_image_list(self, scope="folder"):
+    if scope == "project":
+        return self.collect_project_image_paths()
+    if self.image_list:
+        return self.image_list
+    if self.filename:
+        return [self.filename]
+    return []
+
+
+def _label_dir_path_for_export(self, scope="folder"):
+    if self.output_dir:
+        return self.output_dir
+    if scope == "project" and getattr(self, "project_root", None):
+        return self.project_root
+    return osp.dirname(self.filename) if self.filename else ""
+
+
+def _default_yolo_export_path(self, scope):
+    if scope == "project" and getattr(self, "project_root", None):
+        return osp.realpath(osp.join(self.project_root, "labels"))
+    return osp.realpath(
+        osp.join(osp.dirname(self.filename), "..", "labels")
+    )
+
+
+def _default_voc_export_path(self, scope):
+    if scope == "project" and getattr(self, "project_root", None):
+        return osp.realpath(osp.join(self.project_root, "Annotations"))
+    return osp.realpath(
+        osp.join(osp.dirname(self.filename), "..", "Annotations")
+    )
+
+
+def _default_coco_export_path(self, scope):
+    if scope == "project" and getattr(self, "project_root", None):
+        return osp.realpath(osp.join(self.project_root, "annotations"))
+    label_dir_path = (
+        self.output_dir
+        if self.output_dir
+        else osp.dirname(self.filename)
+    )
+    return osp.realpath(osp.join(label_dir_path, "..", "annotations"))
+
+
+def _default_dota_export_path(self, scope):
+    if scope == "project" and getattr(self, "project_root", None):
+        return osp.realpath(osp.join(self.project_root, "labelTxt"))
+    return osp.realpath(
+        osp.join(osp.dirname(self.filename), "..", "labelTxt")
+    )
+
+
+def _default_mask_export_path(self, scope):
+    if scope == "project" and getattr(self, "project_root", None):
+        return osp.realpath(osp.join(self.project_root, "masks"))
+    label_dir_path = (
+        self.output_dir
+        if self.output_dir
+        else osp.dirname(self.filename)
+    )
+    return osp.realpath(osp.join(label_dir_path, "..", "masks"))
+
+
+def _default_mot_export_path(self, scope, mode):
+    if scope == "project" and getattr(self, "project_root", None):
+        return osp.realpath(osp.join(self.project_root, mode))
+    label_dir_path = (
+        self.output_dir
+        if self.output_dir
+        else osp.dirname(self.filename)
+    )
+    return osp.realpath(osp.join(label_dir_path, "..", mode))
+
+
+def _default_ppocr_export_path(self, scope, mode):
+    if scope == "project" and getattr(self, "project_root", None):
+        return osp.realpath(osp.join(self.project_root, f"ppocr_{mode}"))
+    label_dir_path = (
+        self.output_dir
+        if self.output_dir
+        else osp.dirname(self.filename)
+    )
+    return osp.realpath(osp.join(label_dir_path, "..", f"ppocr_{mode}"))
+
+
+def _default_vlm_r1_export_path(self, scope):
+    if scope == "project" and getattr(self, "project_root", None):
+        return osp.realpath(
+            osp.join(self.project_root, "vlm_r1_ovd.jsonl")
+        )
+    label_dir_path = (
+        self.output_dir
+        if self.output_dir
+        else osp.dirname(self.filename)
+    )
+    return osp.realpath(osp.join(label_dir_path, "..", "vlm_r1_ovd.jsonl"))
+
+
+def _project_layout_radios(self, dialog, scope):
+    if scope != "project":
+        return None, None
+    merge_radio = QtWidgets.QRadioButton(self.tr("Merge into one folder"))
+    preserve_radio = QtWidgets.QRadioButton(
+        self.tr("Preserve subfolder structure")
+    )
+    merge_radio.setChecked(True)
+    group = QButtonGroup(dialog)
+    group.addButton(merge_radio)
+    group.addButton(preserve_radio)
+    return merge_radio, preserve_radio
+
+
+def _project_layout_from_radios(scope, merge_radio, preserve_radio):
+    if (
+        scope == "project"
+        and preserve_radio is not None
+        and preserve_radio.isChecked()
+    ):
+        return "preserve"
+    return "merge"
+
+
+def _export_dir_for_image(self, scope, project_layout, save_path, image_file):
+    if scope != "project" or project_layout != "preserve":
+        return save_path
+    root = getattr(self, "project_root", None)
+    if not root:
+        return save_path
+    rel = osp.relpath(osp.dirname(image_file), root)
+    if rel in (".", ""):
+        return save_path
+    return osp.normpath(osp.join(save_path, rel))
+
+
+def _project_relative_image_path(self, image_file):
+    root = getattr(self, "project_root", None)
+    if not root:
+        return osp.basename(image_file)
+    return osp.relpath(image_file, root).replace("\\", "/")
+
+
+def _collect_project_mot_label_files_merged(self):
+    conv = LabelConverter()
+    merged = []
+    for _name, full in list_immediate_subdirs(self.project_root):
+        merged.extend(conv._iter_mot_sorted_label_paths(full))
+    return merged
+
+
+def export_yolo_annotation(self, mode, scope="folder"):
+    if not _check_export_scope(self, scope):
         return
 
     # Handle config/classes file selection based on mode
@@ -147,9 +348,7 @@ def export_yolo_annotation(self, mode):
     path_input_layout.setSpacing(8)
 
     path_edit = QtWidgets.QLineEdit()
-    path_edit.setText(
-        osp.realpath(osp.join(osp.dirname(self.filename), "..", "labels"))
-    )
+    path_edit.setText(_default_yolo_export_path(self, scope))
     path_edit.setPlaceholderText(self.tr("Select Export Directory"))
 
     def browse_export_path():
@@ -170,6 +369,12 @@ def export_yolo_annotation(self, mode):
     path_input_layout.addWidget(path_button)
     path_layout.addLayout(path_input_layout)
     layout.addLayout(path_layout)
+
+    merge_radio, preserve_radio = _project_layout_radios(self, dialog, scope)
+    if merge_radio:
+        layout.addWidget(QtWidgets.QLabel(self.tr("Project export layout")))
+        layout.addWidget(merge_radio)
+        layout.addWidget(preserve_radio)
 
     options_label = QtWidgets.QLabel(self.tr("Export Options"))
     layout.addWidget(options_label)
@@ -207,6 +412,9 @@ def export_yolo_annotation(self, mode):
     if not result:
         return
 
+    project_layout = _project_layout_from_radios(
+        scope, merge_radio, preserve_radio
+    )
     save_images = save_images_checkbox.isChecked()
     skip_empty_files = skip_empty_files_checkbox.isChecked()
     save_path = path_edit.text()
@@ -245,7 +453,7 @@ def export_yolo_annotation(self, mode):
     else:
         os.makedirs(save_path)
 
-    image_list = self.image_list if self.image_list else [self.filename]
+    image_list = _resolve_export_image_list(self, scope)
 
     progress_dialog = QProgressDialog(
         self.tr("Exporting..."), self.tr("Cancel"), 0, len(image_list), self
@@ -268,14 +476,18 @@ def export_yolo_annotation(self, mode):
                 src_file = osp.join(self.output_dir, label_file_name)
             else:
                 src_file = osp.join(osp.dirname(image_file), label_file_name)
-            dst_file = osp.join(save_path, dst_file_name)
+            dst_dir = _export_dir_for_image(
+                self, scope, project_layout, save_path, image_file
+            )
+            os.makedirs(dst_dir, exist_ok=True)
+            dst_file = osp.join(dst_dir, dst_file_name)
 
             is_empty_file = converter.custom_to_yolo(
                 src_file, dst_file, mode, skip_empty_files
             )
 
             if save_images and not (skip_empty_files and is_empty_file):
-                image_dst = osp.join(save_path, image_file_name)
+                image_dst = osp.join(dst_dir, image_file_name)
                 shutil.copy(image_file, image_dst)
 
             if skip_empty_files and is_empty_file and osp.exists(dst_file):
@@ -311,8 +523,8 @@ def export_yolo_annotation(self, mode):
         popup.show_popup(self, position="center")
 
 
-def export_voc_annotation(self, mode):
-    if not _check_filename_exist(self):
+def export_voc_annotation(self, mode, scope="folder"):
+    if not _check_export_scope(self, scope):
         return
 
     dialog = QtWidgets.QDialog(self)
@@ -332,9 +544,7 @@ def export_voc_annotation(self, mode):
     path_input_layout.setSpacing(8)
 
     path_edit = QtWidgets.QLineEdit()
-    path_edit.setText(
-        osp.realpath(osp.join(osp.dirname(self.filename), "..", "Annotations"))
-    )
+    path_edit.setText(_default_voc_export_path(self, scope))
     path_edit.setPlaceholderText(self.tr("Select Export Directory"))
 
     def browse_export_path():
@@ -355,6 +565,12 @@ def export_voc_annotation(self, mode):
     path_input_layout.addWidget(path_button)
     path_layout.addLayout(path_input_layout)
     layout.addLayout(path_layout)
+
+    merge_radio, preserve_radio = _project_layout_radios(self, dialog, scope)
+    if merge_radio:
+        layout.addWidget(QtWidgets.QLabel(self.tr("Project export layout")))
+        layout.addWidget(merge_radio)
+        layout.addWidget(preserve_radio)
 
     options_label = QtWidgets.QLabel(self.tr("Export Options"))
     layout.addWidget(options_label)
@@ -392,6 +608,9 @@ def export_voc_annotation(self, mode):
     if not result:
         return
 
+    project_layout = _project_layout_from_radios(
+        scope, merge_radio, preserve_radio
+    )
     save_images = save_images_checkbox.isChecked()
     skip_empty_files = skip_empty_files_checkbox.isChecked()
     save_path = path_edit.text()
@@ -432,7 +651,7 @@ def export_voc_annotation(self, mode):
 
     converter = LabelConverter()
 
-    image_list = self.image_list if self.image_list else [self.filename]
+    image_list = _resolve_export_image_list(self, scope)
 
     progress_dialog = QProgressDialog(
         self.tr("Exporting..."), self.tr("Cancel"), 0, len(image_list), self
@@ -455,14 +674,18 @@ def export_voc_annotation(self, mode):
                 src_file = osp.join(self.output_dir, label_file_name)
             else:
                 src_file = osp.join(osp.dirname(image_file), label_file_name)
-            dst_file = osp.join(save_path, dst_file_name)
+            dst_dir = _export_dir_for_image(
+                self, scope, project_layout, save_path, image_file
+            )
+            os.makedirs(dst_dir, exist_ok=True)
+            dst_file = osp.join(dst_dir, dst_file_name)
 
             is_empty_file = converter.custom_to_voc(
                 image_file, src_file, dst_file, mode, skip_empty_files
             )
 
             if save_images and not (skip_empty_files and is_empty_file):
-                image_dst = osp.join(save_path, image_file_name)
+                image_dst = osp.join(dst_dir, image_file_name)
                 shutil.copy(image_file, image_dst)
 
             if skip_empty_files and is_empty_file and osp.exists(dst_file):
@@ -498,8 +721,8 @@ def export_voc_annotation(self, mode):
         popup.show_popup(self, position="center")
 
 
-def export_coco_annotation(self, mode):
-    if not _check_filename_exist(self):
+def export_coco_annotation(self, mode, scope="folder"):
+    if not _check_export_scope(self, scope):
         return
 
     if mode == "pose":
@@ -551,14 +774,10 @@ def export_coco_annotation(self, mode):
     path_input_layout = QHBoxLayout()
     path_input_layout.setSpacing(8)
 
-    label_dir_path = osp.dirname(self.filename)
-    if self.output_dir:
-        label_dir_path = self.output_dir
+    label_dir_path = _label_dir_path_for_export(self, scope)
 
     path_edit = QtWidgets.QLineEdit()
-    path_edit.setText(
-        osp.realpath(osp.join(label_dir_path, "..", "annotations"))
-    )
+    path_edit.setText(_default_coco_export_path(self, scope))
     path_edit.setPlaceholderText(self.tr("Select Export Directory"))
 
     def browse_export_path():
@@ -579,6 +798,12 @@ def export_coco_annotation(self, mode):
     path_input_layout.addWidget(path_button)
     path_layout.addLayout(path_input_layout)
     layout.addLayout(path_layout)
+
+    merge_radio, preserve_radio = _project_layout_radios(self, dialog, scope)
+    if merge_radio:
+        layout.addWidget(QtWidgets.QLabel(self.tr("Project export layout")))
+        layout.addWidget(merge_radio)
+        layout.addWidget(preserve_radio)
 
     button_layout = QHBoxLayout()
     button_layout.setContentsMargins(0, 16, 0, 0)
@@ -603,6 +828,9 @@ def export_coco_annotation(self, mode):
     if not result:
         return
 
+    project_layout = _project_layout_from_radios(
+        scope, merge_radio, preserve_radio
+    )
     save_path = path_edit.text()
     if osp.exists(save_path):
         msg_box = QtWidgets.QMessageBox(self)
@@ -634,7 +862,7 @@ def export_coco_annotation(self, mode):
     else:
         os.makedirs(save_path)
 
-    image_list = self.image_list if self.image_list else [self.filename]
+    image_list = _resolve_export_image_list(self, scope)
     progress_dialog = QProgressDialog(
         self.tr("Exporting..."), self.tr("Cancel"), 0, 0, self
     )
@@ -645,8 +873,17 @@ def export_coco_annotation(self, mode):
     progress_dialog.setRange(0, 0)
     progress_dialog.setStyleSheet(get_progress_dialog_style())
 
+    coco_image_name_fn = None
+    if scope == "project" and project_layout == "preserve":
+        coco_image_name_fn = self._project_relative_image_path
+
     self.export_thread = ExportThread(
-        converter, image_list, label_dir_path, save_path, mode
+        converter,
+        image_list,
+        label_dir_path,
+        save_path,
+        mode,
+        coco_image_name_fn=coco_image_name_fn,
     )
 
     def on_export_finished(success, error_msg):
@@ -684,8 +921,8 @@ def export_coco_annotation(self, mode):
     progress_dialog.canceled.connect(self.export_thread.terminate)
 
 
-def export_dota_annotation(self):
-    if not _check_filename_exist(self):
+def export_dota_annotation(self, scope="folder"):
+    if not _check_export_scope(self, scope):
         return
 
     filter = "Classes Files (*.txt);;All Files (*)"
@@ -715,9 +952,7 @@ def export_dota_annotation(self):
     path_input_layout.setSpacing(8)
 
     path_edit = QtWidgets.QLineEdit()
-    path_edit.setText(
-        osp.realpath(osp.join(osp.dirname(self.filename), "..", "labelTxt"))
-    )
+    path_edit.setText(_default_dota_export_path(self, scope))
     path_edit.setPlaceholderText(self.tr("Select Export Directory"))
 
     def browse_export_path():
@@ -738,6 +973,12 @@ def export_dota_annotation(self):
     path_input_layout.addWidget(path_button)
     path_layout.addLayout(path_input_layout)
     layout.addLayout(path_layout)
+
+    merge_radio, preserve_radio = _project_layout_radios(self, dialog, scope)
+    if merge_radio:
+        layout.addWidget(QtWidgets.QLabel(self.tr("Project export layout")))
+        layout.addWidget(merge_radio)
+        layout.addWidget(preserve_radio)
 
     button_layout = QHBoxLayout()
     button_layout.setContentsMargins(0, 16, 0, 0)
@@ -762,6 +1003,9 @@ def export_dota_annotation(self):
     if not result:
         return
 
+    project_layout = _project_layout_from_radios(
+        scope, merge_radio, preserve_radio
+    )
     save_path = path_edit.text()
 
     if osp.exists(save_path):
@@ -800,7 +1044,7 @@ def export_dota_annotation(self):
 
     converter = LabelConverter(classes_file=self.classes_file)
 
-    image_list = self.image_list if self.image_list else [self.filename]
+    image_list = _resolve_export_image_list(self, scope)
 
     progress_dialog = QProgressDialog(
         self.tr("Exporting..."), self.tr("Cancel"), 0, len(image_list), self
@@ -823,7 +1067,11 @@ def export_dota_annotation(self):
                 src_file = osp.join(self.output_dir, label_file_name)
             else:
                 src_file = osp.join(osp.dirname(image_file), label_file_name)
-            dst_file = osp.join(save_path, dst_file_name)
+            dst_dir = _export_dir_for_image(
+                self, scope, project_layout, save_path, image_file
+            )
+            os.makedirs(dst_dir, exist_ok=True)
+            dst_file = osp.join(dst_dir, dst_file_name)
 
             if not osp.exists(src_file):
                 pathlib.Path(dst_file).touch()
@@ -860,8 +1108,8 @@ def export_dota_annotation(self):
         popup.show_popup(self, position="center")
 
 
-def export_mask_annotation(self):
-    if not _check_filename_exist(self):
+def export_mask_annotation(self, scope="folder"):
+    if not _check_export_scope(self, scope):
         return
 
     filter = "JSON Files (*.json);;All Files (*)"
@@ -893,12 +1141,8 @@ def export_mask_annotation(self):
     path_input_layout = QHBoxLayout()
     path_input_layout.setSpacing(8)
 
-    label_dir_path = osp.dirname(self.filename)
-    if self.output_dir:
-        label_dir_path = self.output_dir
-
     path_edit = QtWidgets.QLineEdit()
-    path_edit.setText(osp.realpath(osp.join(label_dir_path, "..", "masks")))
+    path_edit.setText(_default_mask_export_path(self, scope))
     path_edit.setPlaceholderText(self.tr("Select Export Directory"))
 
     def browse_export_path():
@@ -919,6 +1163,12 @@ def export_mask_annotation(self):
     path_input_layout.addWidget(path_button)
     path_layout.addLayout(path_input_layout)
     layout.addLayout(path_layout)
+
+    merge_radio, preserve_radio = _project_layout_radios(self, dialog, scope)
+    if merge_radio:
+        layout.addWidget(QtWidgets.QLabel(self.tr("Project export layout")))
+        layout.addWidget(merge_radio)
+        layout.addWidget(preserve_radio)
 
     button_layout = QHBoxLayout()
     button_layout.setContentsMargins(0, 16, 0, 0)
@@ -943,6 +1193,9 @@ def export_mask_annotation(self):
     if not result:
         return
 
+    project_layout = _project_layout_from_radios(
+        scope, merge_radio, preserve_radio
+    )
     save_path = path_edit.text()
     if osp.exists(save_path):
         msg_box = QtWidgets.QMessageBox(self)
@@ -975,7 +1228,7 @@ def export_mask_annotation(self):
         os.makedirs(save_path)
 
     converter = LabelConverter()
-    image_list = self.image_list if self.image_list else [self.filename]
+    image_list = _resolve_export_image_list(self, scope)
 
     progress_dialog = QProgressDialog(
         self.tr("Exporting..."), self.tr("Cancel"), 0, len(image_list), self
@@ -999,7 +1252,11 @@ def export_mask_annotation(self):
                 src_file = osp.join(self.output_dir, label_file_name)
             else:
                 src_file = osp.join(osp.dirname(image_file), label_file_name)
-            dst_file = osp.join(save_path, dst_file_name)
+            dst_dir = _export_dir_for_image(
+                self, scope, project_layout, save_path, image_file
+            )
+            os.makedirs(dst_dir, exist_ok=True)
+            dst_file = osp.join(dst_dir, dst_file_name)
 
             if not osp.exists(src_file):
                 continue
@@ -1036,8 +1293,8 @@ def export_mask_annotation(self):
         popup.show_popup(self, position="center")
 
 
-def export_mot_annotation(self, mode):
-    if not _check_filename_exist(self):
+def export_mot_annotation(self, mode, scope="folder"):
+    if not _check_export_scope(self, scope):
         return
 
     converter = LabelConverter()
@@ -1069,12 +1326,10 @@ def export_mot_annotation(self, mode):
     path_input_layout = QHBoxLayout()
     path_input_layout.setSpacing(8)
 
-    label_dir_path = osp.dirname(self.filename)
-    if self.output_dir:
-        label_dir_path = self.output_dir
+    label_dir_path = _label_dir_path_for_export(self, scope)
 
     path_edit = QtWidgets.QLineEdit()
-    path_edit.setText(osp.realpath(osp.join(label_dir_path, "..", mode)))
+    path_edit.setText(_default_mot_export_path(self, scope, mode))
     path_edit.setPlaceholderText(self.tr("Select Export Directory"))
 
     def browse_export_path():
@@ -1095,6 +1350,12 @@ def export_mot_annotation(self, mode):
     path_input_layout.addWidget(path_button)
     path_layout.addLayout(path_input_layout)
     layout.addLayout(path_layout)
+
+    merge_radio, preserve_radio = _project_layout_radios(self, dialog, scope)
+    if merge_radio:
+        layout.addWidget(QtWidgets.QLabel(self.tr("Project export layout")))
+        layout.addWidget(merge_radio)
+        layout.addWidget(preserve_radio)
 
     button_layout = QHBoxLayout()
     button_layout.setContentsMargins(0, 16, 0, 0)
@@ -1119,6 +1380,9 @@ def export_mot_annotation(self, mode):
     if not result:
         return
 
+    project_layout = _project_layout_from_radios(
+        scope, merge_radio, preserve_radio
+    )
     save_path = path_edit.text()
     if osp.exists(save_path):
         msg_box = QtWidgets.QMessageBox(self)
@@ -1150,7 +1414,7 @@ def export_mot_annotation(self, mode):
     else:
         os.makedirs(save_path)
 
-    image_list = self.image_list if self.image_list else [self.filename]
+    image_list = _resolve_export_image_list(self, scope)
     progress_dialog = QProgressDialog(
         self.tr("Exporting..."), self.tr("Cancel"), 0, 0, self
     )
@@ -1158,12 +1422,7 @@ def export_mot_annotation(self, mode):
     progress_dialog.setWindowTitle(self.tr("Progress"))
     progress_dialog.setMinimumWidth(500)
     progress_dialog.setMinimumHeight(150)
-    progress_dialog.setRange(0, 0)
     progress_dialog.setStyleSheet(get_progress_dialog_style())
-
-    self.export_thread = ExportThread(
-        converter, image_list, label_dir_path, save_path, mode
-    )
 
     def on_export_finished(success, error_msg):
         progress_dialog.close()
@@ -1192,6 +1451,62 @@ def export_mot_annotation(self, mode):
             )
             popup.show_popup(self, position="center")
 
+    if mode in ("mot", "mots") and scope == "project" and project_layout == "preserve":
+        subs = list_immediate_subdirs(self.project_root)
+        progress_dialog.setRange(0, max(len(subs), 1))
+        try:
+            for i, (name, full) in enumerate(subs):
+                sub_save = osp.join(save_path, name)
+                os.makedirs(sub_save, exist_ok=True)
+                if mode == "mot":
+                    converter.custom_to_mot(full, sub_save)
+                else:
+                    converter.custom_to_mots(full, sub_save)
+                progress_dialog.setValue(i + 1)
+                if progress_dialog.wasCanceled():
+                    break
+            progress_dialog.close()
+            template = self.tr(
+                "Exporting annotations successfully!\n"
+                "Results have been saved to:\n"
+                "%s"
+            )
+            popup = Popup(
+                template % save_path,
+                self,
+                icon=new_icon_path("copy-green", "svg"),
+            )
+            popup.show_popup(self, popup_height=65, position="center")
+        except Exception as e:
+            progress_dialog.close()
+            logger.error(str(e))
+            popup = Popup(
+                str(e),
+                self,
+                icon=new_icon_path("error", "svg"),
+            )
+            popup.show_popup(self, position="center")
+        return
+
+    label_files = None
+    odvg_filename_fn = None
+    if mode in ("mot", "mots") and scope == "project" and project_layout == "merge":
+        label_files = _collect_project_mot_label_files_merged(self)
+    elif mode == "odvg" and scope == "project" and project_layout == "preserve":
+        odvg_filename_fn = self._project_relative_image_path
+
+    progress_dialog.setRange(0, 0)
+
+    self.export_thread = ExportThread(
+        converter,
+        image_list,
+        label_dir_path,
+        save_path,
+        mode,
+        label_files=label_files,
+        odvg_filename_fn=odvg_filename_fn,
+    )
+
     self.export_thread.finished.connect(on_export_finished)
 
     progress_dialog.show()
@@ -1200,12 +1515,12 @@ def export_mot_annotation(self, mode):
     progress_dialog.canceled.connect(self.export_thread.terminate)
 
 
-def export_odvg_annotation(self):
-    export_mot_annotation(self, "odvg")
+def export_odvg_annotation(self, scope="folder"):
+    export_mot_annotation(self, "odvg", scope=scope)
 
 
-def export_pporc_annotation(self, mode):
-    if not _check_filename_exist(self):
+def export_pporc_annotation(self, mode, scope="folder"):
+    if not _check_export_scope(self, scope):
         return
 
     dialog = QtWidgets.QDialog(self)
@@ -1224,14 +1539,8 @@ def export_pporc_annotation(self, mode):
     path_input_layout = QHBoxLayout()
     path_input_layout.setSpacing(8)
 
-    label_dir_path = osp.dirname(self.filename)
-    if self.output_dir:
-        label_dir_path = self.output_dir
-
     path_edit = QtWidgets.QLineEdit()
-    path_edit.setText(
-        osp.realpath(osp.join(label_dir_path, "..", f"ppocr_{mode}"))
-    )
+    path_edit.setText(_default_ppocr_export_path(self, scope, mode))
     path_edit.setPlaceholderText(self.tr("Select Export Directory"))
 
     def browse_export_path():
@@ -1252,6 +1561,12 @@ def export_pporc_annotation(self, mode):
     path_input_layout.addWidget(path_button)
     path_layout.addLayout(path_input_layout)
     layout.addLayout(path_layout)
+
+    merge_radio, preserve_radio = _project_layout_radios(self, dialog, scope)
+    if merge_radio:
+        layout.addWidget(QtWidgets.QLabel(self.tr("Project export layout")))
+        layout.addWidget(merge_radio)
+        layout.addWidget(preserve_radio)
 
     button_layout = QHBoxLayout()
     button_layout.setContentsMargins(0, 16, 0, 0)
@@ -1276,6 +1591,9 @@ def export_pporc_annotation(self, mode):
     if not result:
         return
 
+    project_layout = _project_layout_from_radios(
+        scope, merge_radio, preserve_radio
+    )
     save_path = path_edit.text()
     if osp.exists(save_path):
         msg_box = QtWidgets.QMessageBox(self)
@@ -1308,17 +1626,18 @@ def export_pporc_annotation(self, mode):
         os.makedirs(save_path)
 
     if mode == "rec":
-        save_crop_img_path = osp.join(save_path, "crop_img")
-        if osp.exists(save_crop_img_path):
-            shutil.rmtree(save_crop_img_path)
-        os.makedirs(save_crop_img_path, exist_ok=True)
+        if not (scope == "project" and project_layout == "preserve"):
+            save_crop_img_path = osp.join(save_path, "crop_img")
+            if osp.exists(save_crop_img_path):
+                shutil.rmtree(save_crop_img_path)
+            os.makedirs(save_crop_img_path, exist_ok=True)
     elif mode == "kie":
         total_class_set = set()
         class_list_file = osp.join(save_path, "class_list.txt")
 
     converter = LabelConverter()
 
-    image_list = self.image_list if self.image_list else [self.filename]
+    image_list = _resolve_export_image_list(self, scope)
     progress_dialog = QProgressDialog(
         self.tr("Exporting..."), self.tr("Cancel"), 0, len(image_list), self
     )
@@ -1335,13 +1654,19 @@ def export_pporc_annotation(self, mode):
             image_file_name = osp.basename(image_file)
             label_file_name = osp.splitext(image_file_name)[0] + ".json"
             label_file = osp.join(osp.dirname(image_file), label_file_name)
+            dst_dir = _export_dir_for_image(
+                self, scope, project_layout, save_path, image_file
+            )
+            os.makedirs(dst_dir, exist_ok=True)
+            if mode == "rec" and scope == "project" and project_layout == "preserve":
+                os.makedirs(osp.join(dst_dir, "crop_img"), exist_ok=True)
             if mode == "rec":
                 converter.custom_to_ppocr(
-                    image_file, label_file, save_path, mode
+                    image_file, label_file, dst_dir, mode
                 )
             elif mode == "kie":
                 class_set = converter.custom_to_ppocr(
-                    image_file, label_file, save_path, mode
+                    image_file, label_file, dst_dir, mode
                 )
                 total_class_set = total_class_set.union(class_set)
 
@@ -1381,8 +1706,8 @@ def export_pporc_annotation(self, mode):
         popup.show_popup(self, position="center")
 
 
-def export_vlm_r1_ovd_annotation(self):
-    if not _check_filename_exist(self):
+def export_vlm_r1_ovd_annotation(self, scope="folder"):
+    if not _check_export_scope(self, scope):
         return
 
     dialog = QtWidgets.QDialog(self)
@@ -1403,12 +1728,7 @@ def export_vlm_r1_ovd_annotation(self):
     path_input_layout.setSpacing(8)
 
     # Default export path and filename
-    label_dir_path = osp.dirname(self.filename)
-    if self.output_dir:
-        label_dir_path = self.output_dir
-    default_export_path = osp.realpath(
-        osp.join(label_dir_path, "..", "vlm_r1_ovd.jsonl")
-    )
+    default_export_path = _default_vlm_r1_export_path(self, scope)
 
     path_edit = QtWidgets.QLineEdit()
     path_edit.setText(default_export_path)
@@ -1435,6 +1755,12 @@ def export_vlm_r1_ovd_annotation(self):
     path_input_layout.addWidget(path_button)
     path_layout.addLayout(path_input_layout)
     main_layout.addLayout(path_layout)
+
+    merge_radio, preserve_radio = _project_layout_radios(self, dialog, scope)
+    if merge_radio:
+        main_layout.addWidget(QtWidgets.QLabel(self.tr("Project export layout")))
+        main_layout.addWidget(merge_radio)
+        main_layout.addWidget(preserve_radio)
 
     # --- Prefix input ---
     prefix_layout = QVBoxLayout()
@@ -1547,6 +1873,9 @@ def export_vlm_r1_ovd_annotation(self):
     if not result:
         return
 
+    project_layout = _project_layout_from_radios(
+        scope, merge_radio, preserve_radio
+    )
     save_path = path_edit.text()
     prefix = prefix_edit.text().strip()
 
@@ -1577,10 +1906,8 @@ def export_vlm_r1_ovd_annotation(self):
         if clicked_button == cancel_msg_button:
             return
 
-    image_list = self.image_list if self.image_list else [self.filename]
-    label_dir_path = osp.dirname(self.filename)
-    if self.output_dir:
-        label_dir_path = self.output_dir
+    image_list = _resolve_export_image_list(self, scope)
+    label_dir_path = _label_dir_path_for_export(self, scope)
 
     # --- Attempt to create LabelConverter first ---
     try:
@@ -1608,6 +1935,10 @@ def export_vlm_r1_ovd_annotation(self):
     progress_dialog.setStyleSheet(get_progress_dialog_style())
 
     try:
+        vlm_image_name_fn = None
+        if scope == "project" and project_layout == "preserve":
+            vlm_image_name_fn = self._project_relative_image_path
+
         self.export_thread = ExportThread(
             converter,
             image_list,
@@ -1615,6 +1946,7 @@ def export_vlm_r1_ovd_annotation(self):
             save_path,
             "vlm_r1_ovd",
             prefix=prefix,
+            vlm_image_name_fn=vlm_image_name_fn,
         )
 
         def on_export_finished(success, error_msg):

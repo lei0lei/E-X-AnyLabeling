@@ -63,6 +63,7 @@ from .utils.file_search import (
     matches_filename,
     matches_label_attribute,
 )
+from .widgets.open_project_dialog import list_immediate_subdirs
 from .widgets import (
     AboutDialog,
     AutoLabelingWidget,
@@ -91,6 +92,7 @@ from .widgets import (
     UniqueLabelQListWidget,
     ZoomWidget,
     NavigatorDialog,
+    OpenProjectDialog,
 )
 
 LABEL_COLORMAP = utils.label_colormap()
@@ -202,6 +204,9 @@ class LabelingWidget(LabelDialog):
         self.label_list = LabelListWidget()
         self.label_list.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self.last_open_dir = None
+        self.project_root = None
+        self.project_label_classes_file_path = None
+        self.project_upload_annotation_dir = None
 
         self.flag_dock = self.flag_widget = None
         self.flag_dock = QtWidgets.QDockWidget(self.tr("Flags"), self)
@@ -456,6 +461,16 @@ class LabelingWidget(LabelDialog):
             "open",
             self.tr("Open Dir"),
         )
+        open_project = action(
+            self.tr("Open Project"),
+            self.open_project_dialog,
+            None,
+            None,
+            self.tr(
+                "Open a project folder, then choose a subfolder to label"
+            ),
+        )
+        open_project.setIcon(utils.new_icon("folder", "svg"))
         open_next_image = action(
             self.tr("Next Image"),
             self.open_next_image,
@@ -1537,6 +1552,136 @@ class LabelingWidget(LabelDialog):
             tip=self.tr("Export Custom VLM-R1 OVD Annotations"),
         )
 
+        # Project export (merge all subfolders under project root)
+        _ep = lambda f, *a: lambda: f(self, *a)
+        export_project_yolo_hbb = action(
+            self.tr("YOLO HBB"),
+            _ep(utils.export_yolo_annotation, "hbb", "project"),
+            None,
+            icon=upload_export_icon,
+            tip=self.tr(
+                "Export YOLO HBB for the whole project (all subfolders)"
+            ),
+        )
+        export_project_yolo_obb = action(
+            self.tr("YOLO OBB"),
+            _ep(utils.export_yolo_annotation, "obb", "project"),
+            None,
+            icon=upload_export_icon,
+            tip=self.tr(
+                "Export YOLO OBB for the whole project (all subfolders)"
+            ),
+        )
+        export_project_yolo_seg = action(
+            self.tr("YOLO Seg"),
+            _ep(utils.export_yolo_annotation, "seg", "project"),
+            None,
+            icon=upload_export_icon,
+            tip=self.tr(
+                "Export YOLO Seg for the whole project (all subfolders)"
+            ),
+        )
+        export_project_yolo_pose = action(
+            self.tr("YOLO Pose"),
+            _ep(utils.export_yolo_annotation, "pose", "project"),
+            None,
+            icon=upload_export_icon,
+            tip=self.tr(
+                "Export YOLO Pose for the whole project (all subfolders)"
+            ),
+        )
+        export_project_voc_det = action(
+            self.tr("VOC Detection"),
+            _ep(utils.export_voc_annotation, "rectangle", "project"),
+            None,
+            icon=upload_export_icon,
+            tip=self.tr("Export VOC det for the whole project"),
+        )
+        export_project_voc_seg = action(
+            self.tr("VOC Segmentation"),
+            _ep(utils.export_voc_annotation, "polygon", "project"),
+            None,
+            icon=upload_export_icon,
+            tip=self.tr("Export VOC seg for the whole project"),
+        )
+        export_project_coco_det = action(
+            self.tr("COCO Detection"),
+            _ep(utils.export_coco_annotation, "rectangle", "project"),
+            None,
+            icon=upload_export_icon,
+            tip=self.tr("Export COCO det for the whole project"),
+        )
+        export_project_coco_seg = action(
+            self.tr("COCO Segmentation"),
+            _ep(utils.export_coco_annotation, "polygon", "project"),
+            None,
+            icon=upload_export_icon,
+            tip=self.tr("Export COCO seg for the whole project"),
+        )
+        export_project_coco_pose = action(
+            self.tr("COCO Keypoints"),
+            _ep(utils.export_coco_annotation, "pose", "project"),
+            None,
+            icon=upload_export_icon,
+            tip=self.tr("Export COCO pose for the whole project"),
+        )
+        export_project_dota = action(
+            self.tr("DOTA"),
+            _ep(utils.export_dota_annotation, "project"),
+            None,
+            icon=upload_export_icon,
+            tip=self.tr("Export DOTA for the whole project"),
+        )
+        export_project_mask = action(
+            self.tr("MASK"),
+            _ep(utils.export_mask_annotation, "project"),
+            None,
+            icon=upload_export_icon,
+            tip=self.tr("Export MASK for the whole project"),
+        )
+        export_project_odvg = action(
+            self.tr("ODVG"),
+            _ep(utils.export_odvg_annotation, "project"),
+            None,
+            icon=upload_export_icon,
+            tip=self.tr("Export ODVG for the whole project"),
+        )
+        export_project_mot = action(
+            self.tr("MOT"),
+            _ep(utils.export_mot_annotation, "mot", "project"),
+            None,
+            icon=upload_export_icon,
+            tip=self.tr("Export MOT for the whole project"),
+        )
+        export_project_mots = action(
+            self.tr("MOTS"),
+            _ep(utils.export_mot_annotation, "mots", "project"),
+            None,
+            icon=upload_export_icon,
+            tip=self.tr("Export MOTS for the whole project"),
+        )
+        export_project_pporc_rec = action(
+            self.tr("PPOCR Rec"),
+            _ep(utils.export_pporc_annotation, "rec", "project"),
+            None,
+            icon=upload_export_icon,
+            tip=self.tr("Export PPOCR Rec for the whole project"),
+        )
+        export_project_pporc_kie = action(
+            self.tr("PPOCR KIE"),
+            _ep(utils.export_pporc_annotation, "kie", "project"),
+            None,
+            icon=upload_export_icon,
+            tip=self.tr("Export PPOCR KIE for the whole project"),
+        )
+        export_project_vlm_r1 = action(
+            self.tr("VLM-R1 OVD"),
+            _ep(utils.export_vlm_r1_ovd_annotation, "project"),
+            None,
+            icon=upload_export_icon,
+            tip=self.tr("Export VLM-R1 OVD for the whole project"),
+        )
+
         # Group zoom controls into a list for easier toggling.
         zoom_actions = (
             self.zoom_widget,
@@ -1616,6 +1761,7 @@ class LabelingWidget(LabelDialog):
             open=open_,
             open_video=openvideo,
             open_dir=opendir,
+            open_project=open_project,
             close=close,
             toggle_compare_view=toggle_compare_view,
             delete_file=delete_file,
@@ -1736,6 +1882,7 @@ class LabelingWidget(LabelDialog):
                 open_,
                 openvideo,
                 opendir,
+                open_project,
                 save,
                 save_as,
                 close,
@@ -1851,6 +1998,7 @@ class LabelingWidget(LabelDialog):
             language=self.menu(self.tr("Language")),
             upload=self.menu(self.tr("Upload")),
             export=self.menu(self.tr("Export")),
+            export_project=QtWidgets.QMenu(self.tr("Export Project")),
             tool=self.menu(self.tr("Tool")),
             train=self.menu(self.tr("Train")),
             help=self.menu(self.tr("Help")),
@@ -1875,6 +2023,7 @@ class LabelingWidget(LabelDialog):
                 open_next_unchecked_image,
                 open_prev_unchecked_image,
                 opendir,
+                open_project,
                 openvideo,
                 toggle_compare_view,
                 self.menus.recent_files,
@@ -1956,6 +2105,34 @@ class LabelingWidget(LabelDialog):
             ),
         )
         utils.add_actions(
+            self.menus.export_project,
+            (
+                export_project_yolo_hbb,
+                export_project_yolo_obb,
+                export_project_yolo_seg,
+                export_project_yolo_pose,
+                None,
+                export_project_voc_det,
+                export_project_voc_seg,
+                None,
+                export_project_coco_det,
+                export_project_coco_seg,
+                export_project_coco_pose,
+                None,
+                export_project_dota,
+                export_project_mask,
+                export_project_odvg,
+                None,
+                export_project_mot,
+                export_project_mots,
+                None,
+                export_project_pporc_rec,
+                export_project_pporc_kie,
+                None,
+                export_project_vlm_r1,
+            ),
+        )
+        utils.add_actions(
             self.menus.export,
             (
                 export_yolo_hbb_annotation,
@@ -1981,6 +2158,8 @@ class LabelingWidget(LabelDialog):
                 export_pporc_kie_annotation,
                 None,
                 export_vlm_r1_ovd_annotation,
+                None,
+                self.menus.export_project,
             ),
         )
         utils.add_actions(
@@ -2045,6 +2224,7 @@ class LabelingWidget(LabelDialog):
         self.actions.tool = (
             # open_,
             opendir,
+            open_project,
             open_next_image,
             open_prev_image,
             save,
@@ -5516,9 +5696,33 @@ class LabelingWidget(LabelDialog):
             self.load_file(self.filename)
 
     # File
+    def _reset_project_shared_upload_state(self):
+        """Clear paths shared across subfolders of the current project."""
+        self.project_label_classes_file_path = None
+        self.project_upload_annotation_dir = None
+        self.classes_file = None
+        self.yaml_file = None
+
+    def _leave_project_scope(self):
+        """Leave project workflow (single folder, file, video, drop, etc.)."""
+        self.project_root = None
+        self._reset_project_shared_upload_state()
+
+    def collect_project_image_paths(self):
+        """All image paths under project_root (each immediate subfolder)."""
+        import natsort
+
+        if not self.project_root or not osp.exists(self.project_root):
+            return []
+        merged = []
+        for _name, full in list_immediate_subdirs(self.project_root):
+            merged.extend(utils.scan_all_images(full))
+        return natsort.natsorted(merged)
+
     def open_file(self, _value=False):
         if not self.may_continue():
             return
+        self._leave_project_scope()
         path = osp.dirname(str(self.filename)) if self.filename else "."
         formats = [
             f"*.{fmt.data().decode()}"
@@ -5918,6 +6122,31 @@ class LabelingWidget(LabelDialog):
         if not self.may_continue():
             return
 
+        if (
+            dirpath is None
+            and self.project_root
+            and osp.exists(self.project_root)
+        ):
+            if not list_immediate_subdirs(self.project_root):
+                QtWidgets.QMessageBox.information(
+                    self,
+                    self.tr("No subfolders"),
+                    self.tr(
+                        "The current project folder has no subfolders. "
+                        "Use Open Project to pick another root, or use "
+                        "Open Dir after leaving the project."
+                    ),
+                )
+                return
+            dialog = OpenProjectDialog(self.project_root, self)
+            if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+                return
+            selected = dialog.selected_path
+            if not selected:
+                return
+            self.import_image_folder(selected)
+            return
+
         default_open_dir_path = dirpath if dirpath else "."
         if self.last_open_dir and osp.exists(self.last_open_dir):
             default_open_dir_path = self.last_open_dir
@@ -5935,7 +6164,59 @@ class LabelingWidget(LabelDialog):
                 | QtWidgets.QFileDialog.Option.DontResolveSymlinks,
             )
         )
+        self._leave_project_scope()
         self.import_image_folder(target_dir_path)
+
+    def open_project_dialog(self, _value=False):
+        if not self.may_continue():
+            return
+
+        default_path = "."
+        last_proj = self.settings.value("last_project_root", None) or None
+        if last_proj and osp.exists(last_proj):
+            default_path = last_proj
+        elif self.last_open_dir and osp.exists(self.last_open_dir):
+            default_path = self.last_open_dir
+        elif self.filename:
+            default_path = osp.dirname(self.filename)
+
+        root = str(
+            QtWidgets.QFileDialog.getExistingDirectory(
+                self,
+                self.tr("%s - Open Project") % __appname__,
+                default_path,
+                QtWidgets.QFileDialog.Option.ShowDirsOnly
+                | QtWidgets.QFileDialog.Option.DontResolveSymlinks,
+            )
+        )
+        if not root:
+            return
+
+        prev_root = self.project_root
+        if prev_root != root:
+            self._reset_project_shared_upload_state()
+
+        if not list_immediate_subdirs(root):
+            QtWidgets.QMessageBox.information(
+                self,
+                self.tr("No subfolders"),
+                self.tr(
+                    "This folder does not contain any subfolders. "
+                    "Use Open Dir to open a single image folder."
+                ),
+            )
+            return
+
+        self.settings.setValue("last_project_root", root)
+
+        dialog = OpenProjectDialog(root, self)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        selected = dialog.selected_path
+        if not selected:
+            return
+        self.project_root = root
+        self.import_image_folder(selected)
 
     @property
     def image_list(self):
@@ -5951,6 +6232,7 @@ class LabelingWidget(LabelDialog):
             for fmt in QtGui.QImageReader.supportedImageFormats()
         ]
 
+        self._leave_project_scope()
         self.filename = None
         valid_files = []
         for file in image_files:
@@ -5999,6 +6281,7 @@ class LabelingWidget(LabelDialog):
         self.last_open_dir = dirpath
         self.filename = None
         self.file_list_widget.clear()
+        self.fn_to_index.clear()
         image_files = []
 
         search_pattern = parse_search_pattern(pattern) if pattern else None
@@ -6045,6 +6328,32 @@ class LabelingWidget(LabelDialog):
                 item.setCheckState(Qt.CheckState.Unchecked)
             self.file_list_widget.addItem(item)
             self.fn_to_index[filename] = self.file_list_widget.count() - 1
+
+        if not image_files:
+            self.reset_state()
+            self.image = QtGui.QImage()
+            self.canvas.load_pixmap(QtGui.QPixmap(), clear_shapes=True)
+            self.canvas.setEnabled(False)
+            self.set_clean()
+            self.toggle_actions(False)
+            self.actions.open_next_image.setEnabled(False)
+            self.actions.open_prev_image.setEnabled(False)
+            self.actions.open_next_unchecked_image.setEnabled(False)
+            self.actions.open_prev_unchecked_image.setEnabled(False)
+            self.actions.save_as.setEnabled(False)
+            self.actions.save.setEnabled(False)
+            self.shape_text_edit.textChanged.disconnect()
+            self.shape_text_edit.setPlainText("")
+            self.shape_text_edit.textChanged.connect(self.shape_text_changed)
+            self.update_progress_title()
+            self.update_thumbnail_display()
+            if (
+                hasattr(self, "navigator_dialog")
+                and self.navigator_dialog.isVisible()
+            ):
+                self.navigator_dialog.set_image(QtGui.QPixmap())
+            self.status(self.tr("No images in this folder."), 5000)
+            return
 
         self.actions.open_next_image.setEnabled(True)
         self.actions.open_prev_image.setEnabled(True)

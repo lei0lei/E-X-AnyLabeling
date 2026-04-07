@@ -1461,7 +1461,21 @@ class LabelConverter:
 
         return is_emtpy_file
 
-    def custom_to_coco(self, image_list, input_path, output_path, mode):
+    @staticmethod
+    def _mot_label_sort_key(filename):
+        stem = osp.splitext(filename.rsplit("-", 1)[-1])[0]
+        if stem.isdigit():
+            return int(stem)
+        return 0
+
+    def _iter_mot_sorted_label_paths(self, input_path):
+        names = [f for f in os.listdir(input_path) if f.endswith("json")]
+        names.sort(key=self._mot_label_sort_key)
+        return [osp.join(input_path, n) for n in names]
+
+    def custom_to_coco(
+        self, image_list, input_path, output_path, mode, coco_image_name_fn=None
+    ):
         coco_data = self.get_coco_data(mode)
 
         if mode == "rectangle":
@@ -1513,11 +1527,16 @@ class LabelConverter:
             data = self.read_json(label_file)
             image_width = data["imageWidth"]
             image_height = data["imageHeight"]
+            coco_file_name = (
+                coco_image_name_fn(image_file)
+                if coco_image_name_fn
+                else image_name
+            )
             coco_data["images"].append(
                 {
                     "license": 0,
                     "url": None,
-                    "file_name": image_name,
+                    "file_name": coco_file_name,
                     "height": image_height,
                     "width": image_width,
                     "date_captured": None,
@@ -1814,7 +1833,9 @@ class LabelConverter:
                 1
             ].tofile(output_file)
 
-    def custom_to_mot(self, input_path, save_path):
+    def custom_to_mot(self, input_path, save_path, label_files=None):
+        if label_files is None:
+            label_files = self._iter_mot_sorted_label_paths(input_path)
         mot_structure = {
             "sequence": dict(
                 name="MOT",
@@ -1830,19 +1851,8 @@ class LabelConverter:
         }
         seg_len, im_widht, im_height, im_ext = 0, None, None, None
 
-        label_file_list = os.listdir(input_path)
-        label_file_list.sort(
-            key=lambda x: (
-                int(osp.splitext(x.rsplit("-", 1)[-1])[0])
-                if osp.splitext(x.rsplit("-", 1)[-1])[0].isdigit()
-                else 0
-            )
-        )
-
-        for label_file_name in label_file_list:
-            if not label_file_name.endswith("json"):
-                continue
-            label_file = os.path.join(input_path, label_file_name)
+        for label_file in label_files:
+            label_file_name = osp.basename(label_file)
             data = self.read_json(label_file)
 
             seg_len += 1
@@ -1916,7 +1926,9 @@ class LabelConverter:
             for row in mot_structure["gt"]:
                 f.write(",".join(map(str, row)) + "\n")
 
-    def custom_to_mots(self, input_path, save_path):
+    def custom_to_mots(self, input_path, save_path, label_files=None):
+        if label_files is None:
+            label_files = self._iter_mot_sorted_label_paths(input_path)
         mots_structure = {
             "sequence": dict(
                 name="MOTS",
@@ -1931,19 +1943,8 @@ class LabelConverter:
         }
         seg_len, im_widht, im_height, im_ext = 0, None, None, None
 
-        label_file_list = os.listdir(input_path)
-        label_file_list.sort(
-            key=lambda x: (
-                int(osp.splitext(x.rsplit("-", 1)[-1])[0])
-                if osp.splitext(x.rsplit("-", 1)[-1])[0].isdigit()
-                else 0
-            )
-        )
-
-        for label_file_name in label_file_list:
-            if not label_file_name.endswith("json"):
-                continue
-            label_file = os.path.join(input_path, label_file_name)
+        for label_file in label_files:
+            label_file_name = osp.basename(label_file)
             data = self.read_json(label_file)
 
             seg_len += 1
@@ -1997,7 +1998,7 @@ class LabelConverter:
             for row in mots_structure["gt"]:
                 f.write(" ".join(map(str, row)) + "\n")
 
-    def custom_to_odvg(self, image_list, label_path, save_path):
+    def custom_to_odvg(self, image_list, label_path, save_path, filename_fn=None):
         # Save label_map.json
         label_map = {}
         for i, c in enumerate(self.classes):
@@ -2015,6 +2016,9 @@ class LabelConverter:
                 label_file = osp.join(osp.dirname(image_file), label_name)
             width, height = self.get_image_size(image_file)
             data = self.read_json(label_file)
+            out_name = (
+                filename_fn(image_file) if filename_fn else image_name
+            )
             instances = []
             for shape in data["shapes"]:
                 if (
@@ -2035,7 +2039,7 @@ class LabelConverter:
                 )
             od_data.append(
                 {
-                    "filename": image_name,
+                    "filename": out_name,
                     "height": height,
                     "width": width,
                     "detection": {"instances": instances},
@@ -2046,11 +2050,21 @@ class LabelConverter:
             writer.write_all(od_data)
 
     def custom_to_vlm_r1_ovd(
-        self, image_list, label_path, save_path, prefix=""
+        self,
+        image_list,
+        label_path,
+        save_path,
+        prefix="",
+        image_name_fn=None,
     ):
         with jsonlines.open(save_path, mode="w") as writer:
             for i, image_file in enumerate(image_list):
                 image_name = osp.basename(image_file)
+                display_name = (
+                    image_name_fn(image_file)
+                    if image_name_fn
+                    else image_name
+                )
                 label_name = osp.splitext(image_name)[0] + ".json"
                 label_file = osp.join(label_path, label_name)
                 if not osp.exists(label_file):
@@ -2114,7 +2128,7 @@ class LabelConverter:
 
                 item = {
                     "id": i + 1,
-                    "image": prefix + image_name,
+                    "image": prefix + display_name,
                     "conversations": [
                         {"from": "human", "value": question},
                         {"from": "assistant", "value": answer},

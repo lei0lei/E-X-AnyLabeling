@@ -2,6 +2,7 @@ import json
 import jsonlines
 import os
 import os.path as osp
+import shutil
 import time
 import yaml
 
@@ -16,9 +17,20 @@ from PyQt6.QtWidgets import (
 from anylabeling.views.labeling.label_converter import LabelConverter
 from anylabeling.views.labeling.logger import logger
 from anylabeling.views.labeling.widgets import Popup
-from anylabeling.views.labeling.utils.qt import new_icon_path
+from anylabeling.views.labeling.utils.qt import new_icon_path, scan_all_images
 from anylabeling.views.labeling.utils.style import *
 from anylabeling.views.labeling.utils.export import _check_filename_exist
+
+
+def _default_upload_folder_path(self):
+    """Prefer cached project upload dir, then project root, then legacy heuristic."""
+    cached = getattr(self, "project_upload_annotation_dir", None)
+    if cached and osp.isdir(cached):
+        return cached
+    root = getattr(self, "project_root", None)
+    if root and osp.isdir(root):
+        return root
+    return osp.dirname(osp.dirname(self.filename))
 
 
 class UploadPPOCRThread(QThread):
@@ -806,7 +818,7 @@ def upload_mask_annotation(self, LABEL_OPACITY):
     path_input_layout.setSpacing(8)
 
     path_edit = QtWidgets.QLineEdit()
-    path_edit.setText(osp.dirname(osp.dirname(self.filename)))
+    path_edit.setText(_default_upload_folder_path(self))
 
     def browse_upload_folder():
         path = QtWidgets.QFileDialog.getExistingDirectory(
@@ -943,6 +955,8 @@ def upload_mask_annotation(self, LABEL_OPACITY):
 
         # update and refresh the current canvas
         self.load_file(self.filename)
+        if getattr(self, "project_root", None) and osp.isdir(self.project_root):
+            self.project_upload_annotation_dir = label_dir_path
 
     except Exception as e:
         progress_dialog.close()
@@ -958,7 +972,108 @@ def upload_mask_annotation(self, LABEL_OPACITY):
 
 
 def upload_dota_annotation(self):
-    if not _check_filename_exist(self):
+    if not self.may_continue():
+        return
+
+    in_project = bool(
+        getattr(self, "project_root", None)
+        and osp.isdir(self.project_root)
+    )
+    if not in_project and not _check_filename_exist(self):
+        return
+
+    converter = LabelConverter()
+
+    if in_project:
+        bundle = _project_upload_copy_dataset(
+            self, needs_classes_for_yolo=False
+        )
+        if not bundle:
+            return
+        dest_path = bundle["dest_path"]
+        open_folder = bundle["open_folder"]
+
+        response = QtWidgets.QMessageBox()
+        response.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+        response.setWindowTitle(self.tr("Warning"))
+        response.setText(
+            self.tr("Convert DOTA labels under the new project subfolder?")
+        )
+        response.setInformativeText(
+            self.tr(
+                "Each .txt next to an image is converted to JSON. "
+                "Images without .txt are skipped."
+            )
+        )
+        response.setStandardButtons(
+            QtWidgets.QMessageBox.StandardButton.Cancel
+            | QtWidgets.QMessageBox.StandardButton.Ok
+        )
+        response.setStyleSheet(get_msg_box_style())
+        if response.exec() != QtWidgets.QMessageBox.StandardButton.Ok:
+            return
+
+        image_paths = scan_all_images(dest_path)
+        progress_dialog = QProgressDialog(
+            self.tr("Uploading..."),
+            self.tr("Cancel"),
+            0,
+            max(len(image_paths), 1),
+            self,
+        )
+        progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        progress_dialog.setWindowTitle(self.tr("Progress"))
+        progress_dialog.setMinimumWidth(500)
+        progress_dialog.setMinimumHeight(150)
+        progress_dialog.setStyleSheet(
+            get_progress_dialog_style(color="#1d1d1f", height=20)
+        )
+
+        try:
+            for i, image_file in enumerate(image_paths):
+                txt_file = osp.splitext(image_file)[0] + ".txt"
+                json_file = osp.splitext(image_file)[0] + ".json"
+                if not osp.isfile(txt_file):
+                    progress_dialog.setValue(i)
+                    continue
+                converter.dota_to_custom(
+                    input_file=txt_file,
+                    output_file=json_file,
+                    image_file=image_file,
+                )
+                progress_dialog.setValue(i)
+                if progress_dialog.wasCanceled():
+                    break
+
+            progress_dialog.close()
+            template = self.tr(
+                "Uploading annotations successfully!\n"
+                "Results have been saved to:\n"
+                "%s"
+            )
+            popup = Popup(
+                template % dest_path,
+                self,
+                icon=new_icon_path("copy-green", "svg"),
+            )
+            popup.show_popup(self, popup_height=65, position="center")
+
+            self.project_upload_annotation_dir = dest_path
+            if open_folder:
+                self.import_image_folder(dest_path)
+            elif self.filename:
+                self.load_file(self.filename)
+
+        except Exception as e:
+            progress_dialog.close()
+            message = f"Error occurred while uploading annotations: {str(e)}"
+            logger.error(message)
+            popup = Popup(
+                message,
+                self,
+                icon=new_icon_path("error", "svg"),
+            )
+            popup.show_popup(self, position="center")
         return
 
     dialog = QtWidgets.QDialog(self)
@@ -978,7 +1093,7 @@ def upload_dota_annotation(self):
     path_input_layout.setSpacing(8)
 
     path_edit = QtWidgets.QLineEdit()
-    path_edit.setText(osp.dirname(osp.dirname(self.filename)))
+    path_edit.setText(_default_upload_folder_path(self))
 
     def browse_upload_folder():
         path = QtWidgets.QFileDialog.getExistingDirectory(
@@ -1029,7 +1144,6 @@ def upload_dota_annotation(self):
     image_dir_path = osp.dirname(self.filename)
     label_file_list = os.listdir(label_dir_path)
     output_dir_path = self.output_dir if self.output_dir else image_dir_path
-    converter = LabelConverter()
 
     response = QtWidgets.QMessageBox()
     response.setIcon(QtWidgets.QMessageBox.Icon.Warning)
@@ -1100,6 +1214,8 @@ def upload_dota_annotation(self):
 
         # update and refresh the current canvas
         self.load_file(self.filename)
+        if getattr(self, "project_root", None) and osp.isdir(self.project_root):
+            self.project_upload_annotation_dir = label_dir_path
 
     except Exception as e:
         progress_dialog.close()
@@ -1198,7 +1314,104 @@ def upload_coco_annotation(self, mode):
 
 
 def upload_voc_annotation(self, mode):
-    if not _check_filename_exist(self):
+    if not self.may_continue():
+        return
+
+    in_project = bool(
+        getattr(self, "project_root", None)
+        and osp.isdir(self.project_root)
+    )
+    if not in_project and not _check_filename_exist(self):
+        return
+
+    converter = LabelConverter()
+
+    if in_project:
+        bundle = _project_upload_copy_dataset(
+            self, needs_classes_for_yolo=False
+        )
+        if not bundle:
+            return
+        dest_path = bundle["dest_path"]
+        open_folder = bundle["open_folder"]
+
+        response = QtWidgets.QMessageBox()
+        response.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+        response.setWindowTitle(self.tr("Warning"))
+        response.setText(
+            self.tr("Convert VOC XML under the new project subfolder?")
+        )
+        response.setInformativeText(
+            self.tr(
+                "XML files are matched to images by base name anywhere under "
+                "the copied tree. Images without XML are skipped."
+            )
+        )
+        response.setStandardButtons(
+            QtWidgets.QMessageBox.StandardButton.Cancel
+            | QtWidgets.QMessageBox.StandardButton.Ok
+        )
+        response.setStyleSheet(get_msg_box_style())
+        if response.exec() != QtWidgets.QMessageBox.StandardButton.Ok:
+            return
+
+        xml_by_stem = _collect_voc_xml_by_basename(dest_path)
+        image_paths = scan_all_images(dest_path)
+        progress_dialog = QProgressDialog(
+            self.tr("Uploading..."),
+            self.tr("Cancel"),
+            0,
+            max(len(image_paths), 1),
+            self,
+        )
+        progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        progress_dialog.setWindowTitle(self.tr("Progress"))
+        progress_dialog.setMinimumWidth(500)
+        progress_dialog.setMinimumHeight(150)
+        progress_dialog.setStyleSheet(
+            get_progress_dialog_style(color="#1d1d1f", height=20)
+        )
+
+        try:
+            for i, image_path in enumerate(image_paths):
+                stem = osp.splitext(osp.basename(image_path))[0].lower()
+                if stem not in xml_by_stem:
+                    progress_dialog.setValue(i)
+                    continue
+                json_file = osp.splitext(image_path)[0] + ".json"
+                converter.voc_to_custom(
+                    input_file=xml_by_stem[stem],
+                    output_file=json_file,
+                    image_filename=osp.basename(image_path),
+                    mode=mode,
+                )
+                progress_dialog.setValue(i)
+                if progress_dialog.wasCanceled():
+                    break
+
+            progress_dialog.close()
+            self.project_upload_annotation_dir = dest_path
+            popup = Popup(
+                self.tr("Uploading annotations successfully!"),
+                self,
+                icon=new_icon_path("copy-green", "svg"),
+            )
+            popup.show_popup(self, popup_height=65, position="center")
+
+            if open_folder:
+                self.import_image_folder(dest_path)
+            elif self.filename:
+                self.load_file(self.filename)
+
+        except Exception as e:
+            progress_dialog.close()
+            logger.error(str(e))
+            popup = Popup(
+                str(e),
+                self,
+                icon=new_icon_path("error", "svg"),
+            )
+            popup.show_popup(self, position="center")
         return
 
     dialog = QtWidgets.QDialog(self)
@@ -1218,7 +1431,7 @@ def upload_voc_annotation(self, mode):
     path_input_layout.setSpacing(8)
 
     path_edit = QtWidgets.QLineEdit()
-    path_edit.setText(osp.dirname(osp.dirname(self.filename)))
+    path_edit.setText(_default_upload_folder_path(self))
 
     def browse_upload_folder():
         path = QtWidgets.QFileDialog.getExistingDirectory(
@@ -1268,7 +1481,6 @@ def upload_voc_annotation(self, mode):
     image_dir_path = osp.dirname(self.filename)
     label_file_list = os.listdir(label_dir_path)
     output_dir_path = self.output_dir if self.output_dir else image_dir_path
-    converter = LabelConverter()
 
     response = QtWidgets.QMessageBox()
     response.setIcon(QtWidgets.QMessageBox.Icon.Warning)
@@ -1338,6 +1550,8 @@ def upload_voc_annotation(self, mode):
 
         # update and refresh the current canvas
         self.load_file(self.filename)
+        if getattr(self, "project_root", None) and osp.isdir(self.project_root):
+            self.project_upload_annotation_dir = label_dir_path
 
     except Exception as e:
         progress_dialog.close()
@@ -1353,17 +1567,33 @@ def upload_voc_annotation(self, mode):
 
 
 def upload_yolo_annotation(self, mode, LABEL_OPACITY):
-    if not _check_filename_exist(self):
+    if not self.may_continue():
         return
 
+    in_project = bool(
+        getattr(self, "project_root", None)
+        and osp.isdir(self.project_root)
+    )
+    if not in_project and not _check_filename_exist(self):
+        return
+
+    converter = None
+    labels = []
+
     if mode == "pose":
-        filter = "Classes Files (*.yaml);;All Files (*)"
-        self.yaml_file, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self,
-            self.tr("Select a specific yolo-pose config file"),
-            "",
-            filter,
+        reuse_yaml = (
+            in_project
+            and getattr(self, "yaml_file", None)
+            and osp.isfile(self.yaml_file)
         )
+        if not reuse_yaml:
+            filter = "Classes Files (*.yaml);;All Files (*)"
+            self.yaml_file, _ = QtWidgets.QFileDialog.getOpenFileName(
+                self,
+                self.tr("Select a specific yolo-pose config file"),
+                "",
+                filter,
+            )
         if not self.yaml_file:
             return
 
@@ -1379,25 +1609,203 @@ def upload_yolo_annotation(self, mode, LABEL_OPACITY):
             popup.show_popup(self, popup_height=65, position="center")
             return
 
-        labels = []
         for class_name, keypoint_name in converter.pose_classes.items():
             labels.append(class_name)
             labels.extend(keypoint_name)
 
     elif mode in ["hbb", "obb", "seg"]:
-        filter = "Classes Files (*.txt);;All Files (*)"
-        self.classes_file, _ = QtWidgets.QFileDialog.getOpenFileName(
+        if not in_project:
+            proj_cls = getattr(self, "project_label_classes_file_path", None)
+            if proj_cls and osp.isfile(proj_cls):
+                self.classes_file = proj_cls
+                reuse_cls = True
+            else:
+                reuse_cls = (
+                    getattr(self, "classes_file", None)
+                    and osp.isfile(self.classes_file)
+                )
+            if not reuse_cls:
+                filter = "Classes Files (*.txt);;All Files (*)"
+                self.classes_file, _ = QtWidgets.QFileDialog.getOpenFileName(
+                    self,
+                    self.tr("Select a specific classes file"),
+                    "",
+                    filter,
+                )
+            if not self.classes_file:
+                return
+
+            with open(self.classes_file, "r", encoding="utf-8") as f:
+                labels = f.read().splitlines()
+            converter = LabelConverter(classes_file=self.classes_file)
+
+    if in_project:
+        bundle = _project_upload_copy_dataset(
             self,
-            self.tr("Select a specific classes file"),
-            "",
-            filter,
+            needs_classes_for_yolo=mode in ["hbb", "obb", "seg"],
         )
-        if not self.classes_file:
+        if not bundle:
             return
 
-        with open(self.classes_file, "r", encoding="utf-8") as f:
-            labels = f.read().splitlines()
-        converter = LabelConverter(classes_file=self.classes_file)
+        dest_path = bundle["dest_path"]
+        preserve_existing = bundle["preserve_existing"]
+        open_folder = bundle["open_folder"]
+
+        if mode in ["hbb", "obb", "seg"]:
+            classes_path = _resolve_project_classes_file(self)
+            if _folder_has_yolo_txt_next_to_images(dest_path):
+                if not classes_path:
+                    popup = Popup(
+                        self.tr(
+                            "YOLO labels were copied but no project class list is set. "
+                            "Use Upload → Upload Custom Label Classes File."
+                        ),
+                        self,
+                        icon=new_icon_path("warning", "svg"),
+                    )
+                    popup.show_popup(self, position="center")
+                    return
+                self.classes_file = classes_path
+                converter = LabelConverter(classes_file=classes_path)
+                with open(classes_path, "r", encoding="utf-8") as f:
+                    labels = f.read().splitlines()
+
+        response = QtWidgets.QMessageBox()
+        response.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+        response.setWindowTitle(self.tr("Warning"))
+        if preserve_existing:
+            response.setText(
+                self.tr("Convert labels under the new project subfolder?")
+            )
+            response.setInformativeText(
+                self.tr(
+                    "Existing JSON may be merged per image. Images without "
+                    "matching labels are left unchanged."
+                )
+            )
+        else:
+            response.setText(
+                self.tr("Convert YOLO labels under the new project subfolder?")
+            )
+            response.setInformativeText(
+                self.tr(
+                    "JSON will be written next to each image. "
+                    "Images without .txt labels are skipped."
+                )
+            )
+        response.setStandardButtons(
+            QtWidgets.QMessageBox.StandardButton.Cancel
+            | QtWidgets.QMessageBox.StandardButton.Ok
+        )
+        response.setStyleSheet(get_msg_box_style())
+        if response.exec() != QtWidgets.QMessageBox.StandardButton.Ok:
+            return
+
+        image_paths = scan_all_images(dest_path)
+        progress_dialog = QProgressDialog(
+            self.tr("Uploading..."),
+            self.tr("Cancel"),
+            0,
+            max(len(image_paths), 1),
+            self,
+        )
+        progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        progress_dialog.setWindowTitle(self.tr("Progress"))
+        progress_dialog.setMinimumWidth(500)
+        progress_dialog.setMinimumHeight(150)
+        progress_dialog.setStyleSheet(
+            get_progress_dialog_style(color="#1d1d1f", height=20)
+        )
+
+        try:
+            for i, image_file in enumerate(image_paths):
+                txt_file = osp.splitext(image_file)[0] + ".txt"
+                json_file = osp.splitext(image_file)[0] + ".json"
+                if not osp.isfile(txt_file) or converter is None:
+                    progress_dialog.setValue(i)
+                    if progress_dialog.wasCanceled():
+                        break
+                    continue
+
+                existing_shapes = []
+                if preserve_existing and osp.exists(json_file):
+                    with open(json_file, "r", encoding="utf-8") as f:
+                        existing_data = json.load(f)
+                        existing_shapes = existing_data.get("shapes", [])
+
+                if mode in ["hbb", "seg"]:
+                    converter.yolo_to_custom(
+                        input_file=txt_file,
+                        output_file=json_file,
+                        image_file=image_file,
+                        mode=mode,
+                    )
+                elif mode == "obb":
+                    converter.yolo_obb_to_custom(
+                        input_file=txt_file,
+                        output_file=json_file,
+                        image_file=image_file,
+                    )
+                elif mode == "pose":
+                    converter.yolo_pose_to_custom(
+                        input_file=txt_file,
+                        output_file=json_file,
+                        image_file=image_file,
+                    )
+
+                if preserve_existing and existing_shapes:
+                    with open(json_file, "r", encoding="utf-8") as f:
+                        new_data = json.load(f)
+                    new_data["shapes"] = existing_shapes + new_data.get(
+                        "shapes", []
+                    )
+                    with open(json_file, "w", encoding="utf-8") as f:
+                        json.dump(new_data, f, indent=2, ensure_ascii=False)
+
+                progress_dialog.setValue(i)
+                if progress_dialog.wasCanceled():
+                    break
+
+            progress_dialog.close()
+            self.project_upload_annotation_dir = dest_path
+            popup = Popup(
+                self.tr("Upload completed successfully!"),
+                self,
+                icon=new_icon_path("copy-green", "svg"),
+            )
+            popup.show_popup(self, popup_height=65, position="center")
+
+            for label in labels:
+                if not label or self.unique_label_list.find_items_by_label(
+                    label
+                ):
+                    continue
+                item = self.unique_label_list.create_item_from_label(label)
+                self.unique_label_list.addItem(item)
+                rgb = self._get_rgb_by_label(label)
+                self.unique_label_list.set_item_label(
+                    item, label, rgb, LABEL_OPACITY
+                )
+
+            if open_folder:
+                self.import_image_folder(dest_path)
+            elif self.filename:
+                self.load_file(self.filename)
+
+        except Exception as e:
+            progress_dialog.close()
+            message = f"Error occurred while uploading annotations: {str(e)}"
+            logger.error(message)
+            popup = Popup(
+                message,
+                self,
+                icon=new_icon_path("error", "svg"),
+            )
+            popup.show_popup(self, position="center")
+        return
+
+    if mode in ["hbb", "obb", "seg"] and converter is None:
+        return
 
     dialog = QtWidgets.QDialog(self)
     dialog.setWindowTitle(self.tr("Upload Options"))
@@ -1416,7 +1824,7 @@ def upload_yolo_annotation(self, mode, LABEL_OPACITY):
     path_input_layout.setSpacing(8)
 
     path_edit = QtWidgets.QLineEdit()
-    path_edit.setText(osp.dirname(osp.dirname(self.filename)))
+    path_edit.setText(_default_upload_folder_path(self))
 
     def browse_upload_folder():
         path = QtWidgets.QFileDialog.getExistingDirectory(
@@ -1572,6 +1980,10 @@ def upload_yolo_annotation(self, mode, LABEL_OPACITY):
 
         progress_dialog.close()
         self.load_file(self.filename)
+        if getattr(self, "project_root", None) and osp.isdir(
+            self.project_root
+        ):
+            self.project_upload_annotation_dir = label_dir_path
         popup = Popup(
             self.tr("Upload completed successfully!"),
             self,
@@ -1579,15 +1991,15 @@ def upload_yolo_annotation(self, mode, LABEL_OPACITY):
         )
         popup.show_popup(self, position="center")
 
-        # Initialize unique labels
         for label in labels:
-            if not self.unique_label_list.find_items_by_label(label):
-                item = self.unique_label_list.create_item_from_label(label)
-                self.unique_label_list.addItem(item)
-                rgb = self._get_rgb_by_label(label)
-                self.unique_label_list.set_item_label(
-                    item, label, rgb, LABEL_OPACITY
-                )
+            if not label or self.unique_label_list.find_items_by_label(label):
+                continue
+            item = self.unique_label_list.create_item_from_label(label)
+            self.unique_label_list.addItem(item)
+            rgb = self._get_rgb_by_label(label)
+            self.unique_label_list.set_item_label(
+                item, label, rgb, LABEL_OPACITY
+            )
 
     except Exception as e:
         progress_dialog.close()
@@ -1603,13 +2015,34 @@ def upload_yolo_annotation(self, mode, LABEL_OPACITY):
 
 
 def upload_label_classes_file(self):
-    filter = "Label Files (*.txt);;All Files (*)"
-    file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
-        self,
-        self.tr("Select a specific label classes file"),
-        "",
-        filter,
-    )
+    file_path = None
+    proj = getattr(self, "project_root", None)
+    saved = getattr(self, "project_label_classes_file_path", None)
+    if proj and osp.isdir(proj) and saved and osp.isfile(saved):
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            self.tr("Label classes"),
+            self.tr(
+                "Use the same label classes file as for this project?\n\n%s"
+            )
+            % saved,
+            QtWidgets.QMessageBox.StandardButton.Yes
+            | QtWidgets.QMessageBox.StandardButton.No
+            | QtWidgets.QMessageBox.StandardButton.Cancel,
+            QtWidgets.QMessageBox.StandardButton.Yes,
+        )
+        if answer == QtWidgets.QMessageBox.StandardButton.Cancel:
+            return
+        if answer == QtWidgets.QMessageBox.StandardButton.Yes:
+            file_path = saved
+    if file_path is None:
+        filter = "Label Files (*.txt);;All Files (*)"
+        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            self.tr("Select a specific label classes file"),
+            "",
+            filter,
+        )
     if not file_path:
         return
 
@@ -1653,6 +2086,10 @@ def upload_label_classes_file(self):
         self.label_dialog.label_list.addItems(labels)
         if self.label_dialog._sort_labels:
             self.label_dialog.sort_labels()
+
+        _root = getattr(self, "project_root", None)
+        if _root and osp.isdir(_root):
+            self.project_label_classes_file_path = file_path
 
         popup = Popup(
             self.tr(f"Successfully loaded {len(set(labels))} labels!"),
@@ -1816,3 +2253,259 @@ def upload_image_flags_file(self):
             icon=new_icon_path("error", "svg"),
         )
         popup.show_popup(self, position="center")
+
+
+def _safe_project_subdir_name(name):
+    name = (name or "").strip()
+    for c in '<>:"/\\|?*':
+        name = name.replace(c, "_")
+    name = name.strip().strip(".") or "imported"
+    if name in (".", ".."):
+        name = "imported"
+    return name
+
+
+def _is_safe_copy_pair(src: str, dst: str) -> bool:
+    src, dst = osp.abspath(src), osp.abspath(dst)
+    if src == dst:
+        return False
+    if dst.startswith(src + os.sep):
+        return False
+    if src.startswith(dst + os.sep):
+        return False
+    return True
+
+
+def _copy_tree_contents(src_root: str, dst_root: str) -> None:
+    for root, _, files in os.walk(src_root):
+        rel = os.path.relpath(root, src_root)
+        dest_dir = dst_root if rel == "." else osp.join(dst_root, rel)
+        os.makedirs(dest_dir, exist_ok=True)
+        for fname in files:
+            shutil.copy2(osp.join(root, fname), osp.join(dest_dir, fname))
+
+
+def _resolve_project_classes_file(self):
+    for path in (
+        getattr(self, "project_label_classes_file_path", None),
+        getattr(self, "classes_file", None),
+    ):
+        if path and osp.isfile(path):
+            return path
+    return None
+
+
+def _folder_has_yolo_txt_next_to_images(folder: str) -> bool:
+    for img in scan_all_images(folder):
+        if osp.isfile(osp.splitext(img)[0] + ".txt"):
+            return True
+    return False
+
+
+def _collect_voc_xml_by_basename(dest_root: str) -> dict:
+    """Map lowercase stem -> full path for each .xml under dest_root."""
+    m = {}
+    for root, _, files in os.walk(dest_root):
+        for f in files:
+            if f.lower().endswith(".xml"):
+                stem = osp.splitext(f)[0].lower()
+                m[stem] = osp.join(root, f)
+    return m
+
+
+def _project_upload_copy_dataset(
+    self, *, needs_classes_for_yolo: bool = False
+):
+    """Dialog + copy external folder into project. Returns dict or None."""
+    project_root = getattr(self, "project_root", None)
+    if not project_root or not osp.isdir(project_root):
+        return None
+
+    dialog = QtWidgets.QDialog(self)
+    dialog.setWindowTitle(self.tr("Upload to project"))
+    dialog.setMinimumWidth(520)
+    dialog.setStyleSheet(get_export_option_style())
+
+    layout = QVBoxLayout()
+    layout.setContentsMargins(24, 24, 24, 24)
+    layout.setSpacing(14)
+
+    layout.addWidget(QtWidgets.QLabel(self.tr("Source folder (images and labels)")))
+    src_row = QHBoxLayout()
+    src_row.setSpacing(8)
+    src_edit = QtWidgets.QLineEdit()
+    src_edit.setPlaceholderText(
+        self.tr("External folder to copy into the project")
+    )
+
+    def browse_src():
+        path = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            self.tr("Select source folder"),
+            src_edit.text() or project_root,
+            QtWidgets.QFileDialog.Option.ShowDirsOnly
+            | QtWidgets.QFileDialog.Option.DontResolveSymlinks
+            | QtWidgets.QFileDialog.Option.DontUseNativeDialog,
+        )
+        if path:
+            src_edit.setText(path)
+
+    browse_btn = QtWidgets.QPushButton(self.tr("Browse"))
+    browse_btn.clicked.connect(browse_src)
+    browse_btn.setStyleSheet(get_cancel_btn_style())
+    src_row.addWidget(src_edit)
+    src_row.addWidget(browse_btn)
+    layout.addLayout(src_row)
+
+    layout.addWidget(
+        QtWidgets.QLabel(
+            self.tr("Subfolder name under project (new folder for this upload)")
+        )
+    )
+    tgt_edit = QtWidgets.QLineEdit()
+    tgt_edit.setPlaceholderText(
+        self.tr("Leave empty to use the source folder name")
+    )
+    layout.addWidget(tgt_edit)
+
+    preserve_cb = QtWidgets.QCheckBox(
+        self.tr("Preserve existing JSON annotations when converting (merge)")
+    )
+    preserve_cb.setChecked(False)
+    layout.addWidget(preserve_cb)
+
+    open_cb = QtWidgets.QCheckBox(
+        self.tr("Open the imported folder in the file list when done")
+    )
+    open_cb.setChecked(True)
+    layout.addWidget(open_cb)
+
+    btn_row = QHBoxLayout()
+    btn_row.setContentsMargins(0, 12, 0, 0)
+    btn_row.setSpacing(8)
+    cancel_btn = QtWidgets.QPushButton(self.tr("Cancel"))
+    cancel_btn.clicked.connect(dialog.reject)
+    cancel_btn.setStyleSheet(get_cancel_btn_style())
+    ok_btn = QtWidgets.QPushButton(self.tr("OK"))
+    ok_btn.clicked.connect(dialog.accept)
+    ok_btn.setStyleSheet(get_ok_btn_style())
+    btn_row.addStretch()
+    btn_row.addWidget(cancel_btn)
+    btn_row.addWidget(ok_btn)
+    layout.addLayout(btn_row)
+    dialog.setLayout(layout)
+
+    if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+        return None
+
+    src = osp.abspath(osp.normpath(src_edit.text().strip()))
+    if not src or not osp.isdir(src):
+        popup = Popup(
+            self.tr("Please choose a valid source folder."),
+            self,
+            icon=new_icon_path("warning", "svg"),
+        )
+        popup.show_popup(self, position="center")
+        return None
+
+    if needs_classes_for_yolo and _folder_has_yolo_txt_next_to_images(src):
+        if not _resolve_project_classes_file(self):
+            popup = Popup(
+                self.tr(
+                    "This dataset has YOLO .txt labels. Set the project class list first: "
+                    "Upload → Upload Custom Label Classes File, then try again."
+                ),
+                self,
+                icon=new_icon_path("warning", "svg"),
+            )
+            popup.show_popup(self, position="center")
+            return None
+
+    raw_name = tgt_edit.text().strip()
+    tgt_name = _safe_project_subdir_name(
+        raw_name if raw_name else osp.basename(src)
+    )
+    dest_path = osp.abspath(osp.join(project_root, tgt_name))
+
+    pr_abs = osp.abspath(project_root)
+    if not dest_path.startswith(pr_abs + os.sep) and dest_path != pr_abs:
+        popup = Popup(
+            self.tr("Invalid destination path."),
+            self,
+            icon=new_icon_path("error", "svg"),
+        )
+        popup.show_popup(self, position="center")
+        return None
+
+    if not _is_safe_copy_pair(src, dest_path):
+        popup = Popup(
+            self.tr(
+                "Cannot copy: source and destination overlap. "
+                "Choose another subfolder name or a different source."
+            ),
+            self,
+            icon=new_icon_path("warning", "svg"),
+        )
+        popup.show_popup(self, position="center")
+        return None
+
+    if osp.lexists(dest_path):
+        msg = QtWidgets.QMessageBox(self)
+        msg.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+        msg.setWindowTitle(self.tr("Folder exists"))
+        msg.setText(
+            self.tr(
+                "Folder \"%s\" already exists under the project. "
+                "Merge copied files into it?"
+            )
+            % tgt_name
+        )
+        msg.setInformativeText(
+            self.tr("Existing files with the same name will be overwritten.")
+        )
+        msg.setStandardButtons(
+            QtWidgets.QMessageBox.StandardButton.Yes
+            | QtWidgets.QMessageBox.StandardButton.No
+        )
+        msg.setDefaultButton(QtWidgets.QMessageBox.StandardButton.No)
+        msg.setStyleSheet(get_msg_box_style())
+        if msg.exec() != QtWidgets.QMessageBox.StandardButton.Yes:
+            return None
+    else:
+        os.makedirs(dest_path, exist_ok=True)
+
+    progress = QProgressDialog(
+        self.tr("Copying into project..."),
+        self.tr("Cancel"),
+        0,
+        0,
+        self,
+    )
+    progress.setWindowModality(Qt.WindowModality.WindowModal)
+    progress.setWindowTitle(self.tr("Progress"))
+    progress.setMinimumWidth(480)
+    progress.setMinimumHeight(120)
+    progress.setRange(0, 0)
+    progress.setStyleSheet(get_progress_dialog_style())
+    progress.show()
+    QtWidgets.QApplication.processEvents()
+
+    try:
+        _copy_tree_contents(src, dest_path)
+    except Exception as e:
+        progress.close()
+        logger.error(str(e))
+        popup = Popup(
+            self.tr("Copy failed: %s") % str(e),
+            self,
+            icon=new_icon_path("error", "svg"),
+        )
+        popup.show_popup(self, position="center")
+        return None
+
+    progress.close()
+    return {
+        "dest_path": dest_path,
+        "preserve_existing": preserve_cb.isChecked(),
+        "open_folder": open_cb.isChecked(),
+    }

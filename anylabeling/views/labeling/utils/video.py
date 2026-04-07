@@ -538,6 +538,8 @@ def open_video_file(self):
     if not self.may_continue():
         return
 
+    self._leave_project_scope()
+
     filter = "Video Files (*.asf *.avi *.m4v *.mkv *.mov *.mp4 *.mpeg *.mpg *.ts *.wmv);;All Files (*)"
     input_file, _ = QFileDialog.getOpenFileName(
         self,
