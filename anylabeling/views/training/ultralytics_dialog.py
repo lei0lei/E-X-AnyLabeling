@@ -10,27 +10,35 @@ import subprocess
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
     QDialog,
-    QVBoxLayout,
-    QHBoxLayout,
-    QTabWidget,
-    QWidget,
-    QPushButton,
-    QLabel,
-    QMessageBox,
-    QScrollArea,
-    QGroupBox,
     QFileDialog,
     QFormLayout,
     QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
     QProgressBar,
-    QTextEdit,
-    QApplication,
+    QScrollArea,
     QSizePolicy,
+    QTabWidget,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+    QPushButton,
 )
+
+import natsort
 
 from anylabeling.config import get_config
 from anylabeling.views.labeling.logger import logger
+from anylabeling.views.labeling.utils import scan_all_images
+from anylabeling.views.labeling.widgets.open_project_dialog import (
+    list_immediate_subdirs,
+)
 from anylabeling.views.labeling.utils.qt import new_icon
 from anylabeling.views.training.widgets.ultralytics_widgets import *
 from anylabeling.services.auto_training.ultralytics._io import *
@@ -76,6 +84,16 @@ class UltralyticsDialog(QDialog):
         self.image_list = parent.image_list
         self.output_dir = parent.output_dir
         self.supported_shape = parent.supported_shape
+        self._project_subfolder_checks = []
+        self._project_subfolder_entries = []
+        self._select_all_subfolders_cb = None
+        self._project_folders_group = None
+        self._project_subfolders_inner_layout = None
+        self._project_subfolders_page_index = 0
+        self._project_subfolders_page_size = 20
+        self._project_subfolders_page_label = None
+        self._project_subfolders_prev_btn = None
+        self._project_subfolders_next_btn = None
         self.selected_task_type = None
         self.config_widgets = {}
         self._classification_cache = None
@@ -146,6 +164,7 @@ class UltralyticsDialog(QDialog):
         self.init_data_tab()
         self.init_config_tab()
         self.init_train_tab()
+        self._update_generate_data_from_project_button()
 
     def save_training_logs_to_file(self):
         """Save training logs to a local file with timestamp"""
@@ -189,6 +208,7 @@ class UltralyticsDialog(QDialog):
         if self.training_status in ["completed", "error", "stop"]:
             self.save_training_logs_to_file()
 
+        self.clear_cache()
         super().closeEvent(event)
 
     def go_to_specific_tab(self, index):
@@ -276,8 +296,210 @@ class UltralyticsDialog(QDialog):
         config_layout.addLayout(task_type_layout)
         parent_layout.addWidget(config_widget)
 
+    def _training_uses_project_subfolders(self):
+        parent = self.parent()
+        if not parent:
+            return False
+        root = getattr(parent, "project_root", None)
+        if not root or not os.path.isdir(root):
+            return False
+        g = getattr(self, "_project_folders_group", None)
+        return g is not None and g.isVisible()
+
+    def effective_image_list(self):
+        if self._training_uses_project_subfolders():
+            return self._images_from_selected_project_subfolders()
+        return self.image_list
+
+    def _images_from_selected_project_subfolders(self):
+        merged = []
+        for folder_path, cb in self._project_subfolder_checks:
+            if cb.isChecked():
+                merged.extend(scan_all_images(folder_path))
+        return natsort.natsorted(merged)
+
+    def _on_project_select_all_toggled(self, _checked):
+        if not self._select_all_subfolders_cb:
+            return
+        want = self._select_all_subfolders_cb.isChecked()
+        for _, cb in self._project_subfolder_checks:
+            cb.blockSignals(True)
+            cb.setChecked(want)
+            cb.blockSignals(False)
+        self.clear_cache()
+        self.refresh_dataset_summary()
+
+    def _on_project_subfolder_toggled(self, _checked=False):
+        if self._select_all_subfolders_cb and self._project_subfolder_checks:
+            total = len(self._project_subfolder_checks)
+            n_on = sum(
+                1 for _, cb in self._project_subfolder_checks if cb.isChecked()
+            )
+            self._select_all_subfolders_cb.blockSignals(True)
+            self._select_all_subfolders_cb.setChecked(
+                n_on == total and total > 0
+            )
+            self._select_all_subfolders_cb.blockSignals(False)
+        self.clear_cache()
+        self.refresh_dataset_summary()
+
+    def _on_subfolder_page_size_changed(self, value):
+        self._project_subfolders_page_size = int(value)
+        self._project_subfolders_page_index = 0
+        self._refresh_project_subfolder_page()
+
+    def _change_subfolder_page(self, delta):
+        total = len(self._project_subfolder_entries)
+        if total <= 0:
+            return
+        page_size = max(1, self._project_subfolders_page_size)
+        page_count = (total + page_size - 1) // page_size
+        self._project_subfolders_page_index = max(
+            0,
+            min(self._project_subfolders_page_index + delta, page_count - 1),
+        )
+        self._refresh_project_subfolder_page()
+
+    def _refresh_project_subfolder_page(self):
+        layout = self._project_subfolders_inner_layout
+        if layout is None:
+            return
+
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.setParent(None)
+
+        total = len(self._project_subfolder_entries)
+        page_size = max(1, self._project_subfolders_page_size)
+        page_count = max(1, (total + page_size - 1) // page_size)
+        self._project_subfolders_page_index = min(
+            self._project_subfolders_page_index, page_count - 1
+        )
+        start = self._project_subfolders_page_index * page_size
+        end = min(start + page_size, total)
+
+        for _, _, cb in self._project_subfolder_entries[start:end]:
+            layout.addWidget(cb)
+        layout.addStretch()
+
+        if self._project_subfolders_page_label is not None:
+            if total == 0:
+                text = self.tr("No subfolders")
+            else:
+                text = self.tr(
+                    "Page {current}/{total_pages} ({start}-{end} of {all_total})"
+                ).format(
+                    current=self._project_subfolders_page_index + 1,
+                    total_pages=page_count,
+                    start=start + 1,
+                    end=end,
+                    all_total=total,
+                )
+            self._project_subfolders_page_label.setText(text)
+
+        if self._project_subfolders_prev_btn is not None:
+            self._project_subfolders_prev_btn.setEnabled(
+                self._project_subfolders_page_index > 0
+            )
+        if self._project_subfolders_next_btn is not None:
+            self._project_subfolders_next_btn.setEnabled(
+                self._project_subfolders_page_index < page_count - 1
+            )
+
+    def init_project_folder_selection(self, parent_layout):
+        parent = self.parent()
+        root = getattr(parent, "project_root", None) if parent else None
+        self._project_folders_group = QGroupBox(
+            self.tr("Project subfolders for training")
+        )
+        g_layout = QVBoxLayout(self._project_folders_group)
+        self._project_subfolder_checks = []
+        self._project_subfolder_entries = []
+        self._select_all_subfolders_cb = None
+        self._project_subfolders_inner_layout = None
+        self._project_subfolders_page_index = 0
+        self._project_subfolders_page_label = None
+        self._project_subfolders_prev_btn = None
+        self._project_subfolders_next_btn = None
+
+        if not root or not os.path.isdir(root):
+            self._project_folders_group.setVisible(False)
+            parent_layout.addWidget(self._project_folders_group)
+            return
+
+        g_layout.addWidget(
+            QLabel(
+                self.tr(
+                    "Only checked subfolders are used for training; "
+                    "unchecked folders are ignored."
+                )
+            )
+        )
+        subdirs = list_immediate_subdirs(root)
+        if not subdirs:
+            g_layout.addWidget(
+                QLabel(
+                    self.tr("No subfolders found under the project root.")
+                )
+            )
+            parent_layout.addWidget(self._project_folders_group)
+            return
+
+        select_row = QHBoxLayout()
+        self._select_all_subfolders_cb = QCheckBox(self.tr("Select all"))
+        self._select_all_subfolders_cb.setChecked(True)
+        self._select_all_subfolders_cb.toggled.connect(
+            self._on_project_select_all_toggled
+        )
+        select_row.addWidget(self._select_all_subfolders_cb)
+        select_row.addStretch()
+        g_layout.addLayout(select_row)
+
+        paging_row = QHBoxLayout()
+        paging_row.addWidget(QLabel(self.tr("Per page:")))
+        page_size_combo = QComboBox()
+        page_size_combo.addItems(["20", "50", "100"])
+        page_size_combo.setCurrentText(str(self._project_subfolders_page_size))
+        page_size_combo.currentTextChanged.connect(
+            self._on_subfolder_page_size_changed
+        )
+        paging_row.addWidget(page_size_combo)
+
+        self._project_subfolders_prev_btn = QPushButton(self.tr("Previous"))
+        self._project_subfolders_prev_btn.clicked.connect(
+            lambda: self._change_subfolder_page(-1)
+        )
+        paging_row.addWidget(self._project_subfolders_prev_btn)
+
+        self._project_subfolders_next_btn = QPushButton(self.tr("Next"))
+        self._project_subfolders_next_btn.clicked.connect(
+            lambda: self._change_subfolder_page(1)
+        )
+        paging_row.addWidget(self._project_subfolders_next_btn)
+
+        self._project_subfolders_page_label = QLabel("")
+        paging_row.addWidget(self._project_subfolders_page_label)
+        paging_row.addStretch()
+        g_layout.addLayout(paging_row)
+
+        inner = QWidget()
+        inner_layout = QVBoxLayout(inner)
+        inner_layout.setContentsMargins(0, 0, 0, 0)
+        self._project_subfolders_inner_layout = inner_layout
+        for name, full in subdirs:
+            cb = QCheckBox(name)
+            cb.setChecked(True)
+            cb.toggled.connect(self._on_project_subfolder_toggled)
+            self._project_subfolder_checks.append((full, cb))
+            self._project_subfolder_entries.append((name, full, cb))
+        self._refresh_project_subfolder_page()
+        g_layout.addWidget(inner)
+        parent_layout.addWidget(self._project_folders_group)
+
     def refresh_dataset_summary(self):
-        if not self.image_list:
+        if not self.effective_image_list():
             self.summary_table.clear()
             return
 
@@ -304,7 +526,7 @@ class UltralyticsDialog(QDialog):
         # Get classification statistics
         classify_shapes = TASK_SHAPE_MAPPINGS.get("Classify", ["flags"])
         label_infos = get_label_infos(
-            self.image_list, classify_shapes, self.output_dir
+            self.effective_image_list(), classify_shapes, self.output_dir
         )
         if not label_infos:
             return [headers]
@@ -331,16 +553,14 @@ class UltralyticsDialog(QDialog):
 
     def _compute_detection_data(self):
         return get_statistics_table_data(
-            self.image_list, self.supported_shape, self.output_dir
+            self.effective_image_list(),
+            self.supported_shape,
+            self.output_dir,
         )
 
     def clear_cache(self):
         self._classification_cache = None
         self._detection_cache = None
-
-    def closeEvent(self, event):
-        self.clear_cache()
-        super().closeEvent(event)
 
     def load_images(self):
         self.parent().open_folder_dialog()
@@ -359,7 +579,9 @@ class UltralyticsDialog(QDialog):
 
     def proceed_to_config(self):
         is_valid, error_message = validate_task_requirements(
-            self.selected_task_type, self.image_list, self.output_dir
+            self.selected_task_type,
+            self.effective_image_list(),
+            self.output_dir,
         )
         if not is_valid:
             QMessageBox.warning(
@@ -374,6 +596,96 @@ class UltralyticsDialog(QDialog):
         self.config_widgets["project"].setReadOnly(self.project_readonly)
 
         self.go_to_specific_tab(1)
+        self._update_generate_data_from_project_button()
+
+    def _update_generate_data_from_project_button(self):
+        btn = getattr(self, "generate_data_from_project_btn", None)
+        if not btn:
+            return
+        parent = self.parent()
+        root = getattr(parent, "project_root", None) if parent else None
+        show = bool(root and os.path.isdir(root))
+        if self.selected_task_type == "Classify":
+            show = False
+        btn.setVisible(show)
+
+    def generate_data_yaml_from_project(self):
+        if self.selected_task_type == "Classify":
+            QMessageBox.information(
+                self,
+                self.tr("Classification"),
+                self.tr(
+                    "Classification training uses a dataset folder, not a "
+                    "YAML file. Use Browse to select the dataset directory."
+                ),
+            )
+            return
+        parent = self.parent()
+        if not parent:
+            return
+        root = getattr(parent, "project_root", None)
+        if not root or not os.path.isdir(root):
+            QMessageBox.warning(
+                self,
+                self.tr("No project"),
+                self.tr(
+                    "Open a project (File → Open Project) first. The data "
+                    "file will be saved under the project folder."
+                ),
+            )
+            return
+        names = parent.collect_training_class_names()
+        if not names:
+            QMessageBox.warning(
+                self,
+                self.tr("No classes"),
+                self.tr(
+                    "No class names found. Upload a label classes file "
+                    "(Upload → Label Classes) or define labels in the label "
+                    "list."
+                ),
+            )
+            return
+        out_path = os.path.join(root, "training_data.yaml")
+        if os.path.isfile(out_path):
+            reply = QMessageBox.question(
+                self,
+                self.tr("Overwrite"),
+                self.tr("File already exists:\n%s\n\nOverwrite?") % out_path,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+        payload = {
+            "nc": len(names),
+            "names": {i: names[i] for i in range(len(names))},
+        }
+        if not save_yaml_config(payload, out_path):
+            QMessageBox.warning(
+                self,
+                self.tr("Error"),
+                self.tr("Failed to write the file."),
+            )
+            return
+        is_valid, result = validate_data_file(out_path)
+        if not is_valid:
+            QMessageBox.warning(
+                self, self.tr("Invalid Data File"), str(result)
+            )
+            return
+        self.config_widgets["data"].setText(out_path)
+        self.names = result
+        logger.info(f"Generated data YAML: {out_path}")
+        QMessageBox.information(
+            self,
+            self.tr("Success"),
+            self.tr(
+                "Saved:\n%s\n\nYou can edit this file if needed, then use "
+                "Browse to re-select it."
+            )
+            % out_path,
+        )
 
     def init_actions(self, parent_layout):
         actions_layout = QHBoxLayout()
@@ -381,6 +693,10 @@ class UltralyticsDialog(QDialog):
         self.load_images_button = SecondaryButton(self.tr("Load Images"))
         self.load_images_button.clicked.connect(self.load_images)
         actions_layout.addWidget(self.load_images_button)
+        proj_root = getattr(self.parent(), "project_root", None)
+        self.load_images_button.setVisible(
+            not (proj_root and os.path.isdir(proj_root))
+        )
         actions_layout.addStretch()
 
         self.next_button = PrimaryButton(self.tr("Next"))
@@ -396,6 +712,7 @@ class UltralyticsDialog(QDialog):
         scroll_layout = QVBoxLayout(scroll_widget)
 
         self.init_task_configuration(scroll_layout)
+        self.init_project_folder_selection(scroll_layout)
         self.init_dataset_summary(scroll_layout)
 
         scroll_layout.addStretch()
@@ -415,6 +732,25 @@ class UltralyticsDialog(QDialog):
         )
         if file_path:
             self.config_widgets["model"].setText(file_path)
+
+    def browse_project_directory(self):
+        """Choose YOLO training output project directory (runs are saved under project/name)."""
+        current = ""
+        if "project" in self.config_widgets:
+            current = self.config_widgets["project"].text().strip()
+        start_dir = current if current and os.path.isdir(current) else ""
+        if not start_dir:
+            try:
+                start_dir = get_default_project_dir()
+            except Exception:
+                start_dir = ""
+        dir_path = QFileDialog.getExistingDirectory(
+            self,
+            self.tr("Select training project directory"),
+            start_dir or "",
+        )
+        if dir_path:
+            self.config_widgets["project"].setText(dir_path)
 
     def browse_data_file(self):
         if self.selected_task_type == "Classify":
@@ -507,7 +843,17 @@ class UltralyticsDialog(QDialog):
         )
         layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
 
+        project_layout = QHBoxLayout()
         self.config_widgets["project"] = CustomLineEdit()
+        self.config_widgets["project"].setPlaceholderText(
+            self.tr("Directory where training runs are stored (project/name/…)")
+        )
+        self.config_widgets["project"].setToolTip(
+            self.tr(
+                "Ultralytics saves runs under this folder. Use Browse to pick "
+                "a folder, or type an absolute path."
+            )
+        )
         selected_task_type = (
             self.selected_task_type.lower()
             if self.selected_task_type
@@ -517,7 +863,11 @@ class UltralyticsDialog(QDialog):
             get_default_project_dir(), selected_task_type
         )
         self.config_widgets["project"].setText(text_project)
-        layout.addRow("Project:", self.config_widgets["project"])
+        project_browse_btn = SecondaryButton(self.tr("Browse"))
+        project_browse_btn.clicked.connect(self.browse_project_directory)
+        project_layout.addWidget(self.config_widgets["project"])
+        project_layout.addWidget(project_browse_btn)
+        layout.addRow(self.tr("Project:"), project_layout)
 
         self.config_widgets["name"] = CustomLineEdit()
         self.config_widgets["name"].setText("exp")
@@ -525,18 +875,52 @@ class UltralyticsDialog(QDialog):
 
         model_layout = QHBoxLayout()
         self.config_widgets["model"] = CustomLineEdit()
+        self.config_widgets["model"].setPlaceholderText(
+            self.tr("Absolute path to .pt weights, e.g. yolov8n.pt")
+        )
+        self.config_widgets["model"].setToolTip(
+            self.tr(
+                "There is no separate “YOLOv8 vs YOLO26” menu: the version is "
+                "only the checkpoint file you put here (yolov8n.pt, yolo11n.pt, "
+                "yolo26n.pt, …). Ultralytics downloads the file if the name is "
+                "a built-in model and it is not cached yet."
+            )
+        )
         model_browse_btn = SecondaryButton("Browse")
         model_browse_btn.clicked.connect(self.browse_model_file)
         model_layout.addWidget(self.config_widgets["model"])
         model_layout.addWidget(model_browse_btn)
         layout.addRow("Model:", model_layout)
+        model_version_hint = QLabel(
+            self.tr(
+                "YOLO series (v8 / v11 / YOLO26, …) is chosen only by this "
+                "weights file. Use yolov8*.pt for YOLOv8; yolo26*.pt is YOLO26 "
+                "and may trigger a download on first use."
+            )
+        )
+        model_version_hint.setWordWrap(True)
+        layout.addRow(model_version_hint)
 
         data_layout = QHBoxLayout()
         self.config_widgets["data"] = CustomLineEdit()
         data_browse_btn = SecondaryButton("Browse")
         data_browse_btn.clicked.connect(self.browse_data_file)
+        self.generate_data_from_project_btn = SecondaryButton(
+            self.tr("Generate from project")
+        )
+        self.generate_data_from_project_btn.setToolTip(
+            self.tr(
+                "Create training_data.yaml under the project folder from "
+                "the label classes file or label list, then fill the Data "
+                "field. You can edit the file and use Browse to re-select."
+            )
+        )
+        self.generate_data_from_project_btn.clicked.connect(
+            self.generate_data_yaml_from_project
+        )
         data_layout.addWidget(self.config_widgets["data"])
         data_layout.addWidget(data_browse_btn)
+        data_layout.addWidget(self.generate_data_from_project_btn)
         layout.addRow("Data:", data_layout)
 
         pose_config_layout = QHBoxLayout()
@@ -1733,7 +2117,7 @@ class UltralyticsDialog(QDialog):
                 )
             else:
                 temp_dir = create_yolo_dataset(
-                    self.image_list,
+                    self.effective_image_list(),
                     self.selected_task_type,
                     config["basic"]["dataset_ratio"],
                     config["basic"]["data"],

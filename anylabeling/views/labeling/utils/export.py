@@ -122,7 +122,7 @@ def _check_export_scope(self, scope="folder"):
             popup = Popup(
                 self.tr(
                     "Please open a project first (File → Open Project), "
-                    "then use Export Project."
+                    "then choose an item under Export."
                 ),
                 self,
                 icon=new_icon_path("warning", "svg"),

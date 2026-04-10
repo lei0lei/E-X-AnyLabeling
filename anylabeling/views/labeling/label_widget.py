@@ -1419,10 +1419,12 @@ class LabelingWidget(LabelDialog):
             tip=self.tr("Upload Custom VLM-R1 OVD Annotations"),
         )
 
-        # Export
+        # Export (scope: full project when File → Open Project is in use, else current folder list)
         export_yolo_hbb_annotation = action(
             self.tr("YOLO HBB"),
-            lambda: utils.export_yolo_annotation(self, "hbb"),
+            lambda: utils.export_yolo_annotation(
+                self, "hbb", self._current_export_scope()
+            ),
             None,
             icon=upload_export_icon,
             tip=self.tr(
@@ -1431,7 +1433,9 @@ class LabelingWidget(LabelDialog):
         )
         export_yolo_obb_annotation = action(
             self.tr("YOLO OBB"),
-            lambda: utils.export_yolo_annotation(self, "obb"),
+            lambda: utils.export_yolo_annotation(
+                self, "obb", self._current_export_scope()
+            ),
             None,
             icon=upload_export_icon,
             tip=self.tr(
@@ -1440,42 +1444,54 @@ class LabelingWidget(LabelDialog):
         )
         export_yolo_seg_annotation = action(
             self.tr("YOLO Seg"),
-            lambda: utils.export_yolo_annotation(self, "seg"),
+            lambda: utils.export_yolo_annotation(
+                self, "seg", self._current_export_scope()
+            ),
             None,
             icon=upload_export_icon,
             tip=self.tr("Export Custom YOLO Segmentation Annotations"),
         )
         export_yolo_pose_annotation = action(
             self.tr("YOLO Pose"),
-            lambda: utils.export_yolo_annotation(self, "pose"),
+            lambda: utils.export_yolo_annotation(
+                self, "pose", self._current_export_scope()
+            ),
             None,
             icon=upload_export_icon,
             tip=self.tr("Export Custom YOLO Pose Annotations"),
         )
         export_voc_det_annotation = action(
             self.tr("VOC Detection"),
-            lambda: utils.export_voc_annotation(self, "rectangle"),
+            lambda: utils.export_voc_annotation(
+                self, "rectangle", self._current_export_scope()
+            ),
             None,
             icon=upload_export_icon,
             tip=self.tr("Export Custom PASCAL VOC Detection Annotations"),
         )
         export_voc_seg_annotation = action(
             self.tr("VOC Segmentation"),
-            lambda: utils.export_voc_annotation(self, "polygon"),
+            lambda: utils.export_voc_annotation(
+                self, "polygon", self._current_export_scope()
+            ),
             None,
             icon=upload_export_icon,
             tip=self.tr("Export Custom PASCAL VOC Segmentation Annotations"),
         )
         export_coco_det_annotation = action(
             self.tr("COCO Detection"),
-            lambda: utils.export_coco_annotation(self, "rectangle"),
+            lambda: utils.export_coco_annotation(
+                self, "rectangle", self._current_export_scope()
+            ),
             None,
             icon=upload_export_icon,
             tip=self.tr("Export Custom COCO Rectangle Annotations"),
         )
         export_coco_seg_annotation = action(
             self.tr("COCO Segmentation"),
-            lambda: utils.export_coco_annotation(self, "polygon"),
+            lambda: utils.export_coco_annotation(
+                self, "polygon", self._current_export_scope()
+            ),
             None,
             icon=upload_export_icon,
             tip=self.tr(
@@ -1484,35 +1500,45 @@ class LabelingWidget(LabelDialog):
         )
         export_coco_pose_annotation = action(
             self.tr("COCO Keypoints"),
-            lambda: utils.export_coco_annotation(self, "pose"),
+            lambda: utils.export_coco_annotation(
+                self, "pose", self._current_export_scope()
+            ),
             None,
             icon=upload_export_icon,
             tip=self.tr("Export Custom COCO Keypoint Annotations"),
         )
         export_dota_annotation = action(
             self.tr("DOTA"),
-            lambda: utils.export_dota_annotation(self),
+            lambda: utils.export_dota_annotation(
+                self, self._current_export_scope()
+            ),
             None,
             icon=upload_export_icon,
             tip=self.tr("Export Custom DOTA Annotations"),
         )
         export_mask_annotation = action(
             self.tr("MASK"),
-            lambda: utils.export_mask_annotation(self),
+            lambda: utils.export_mask_annotation(
+                self, self._current_export_scope()
+            ),
             None,
             icon=upload_export_icon,
             tip=self.tr("Export Custom MASK Annotations - RGB/Gray"),
         )
         export_mot_annotation = action(
             self.tr("MOT"),
-            lambda: utils.export_mot_annotation(self, "mot"),
+            lambda: utils.export_mot_annotation(
+                self, "mot", self._current_export_scope()
+            ),
             None,
             icon=upload_export_icon,
             tip=self.tr("Export Custom Multi-Object-Tracking Annotations"),
         )
         export_mots_annotation = action(
             self.tr("MOTS"),
-            lambda: utils.export_mot_annotation(self, "mots"),
+            lambda: utils.export_mot_annotation(
+                self, "mots", self._current_export_scope()
+            ),
             None,
             icon=upload_export_icon,
             tip=self.tr(
@@ -1521,7 +1547,9 @@ class LabelingWidget(LabelDialog):
         )
         export_odvg_annotation = action(
             self.tr("ODVG"),
-            lambda: utils.export_odvg_annotation(self),
+            lambda: utils.export_odvg_annotation(
+                self, self._current_export_scope()
+            ),
             None,
             icon=upload_export_icon,
             tip=self.tr(
@@ -1530,14 +1558,18 @@ class LabelingWidget(LabelDialog):
         )
         export_pporc_rec_annotation = action(
             self.tr("PPOCR Rec"),
-            lambda: utils.export_pporc_annotation(self, "rec"),
+            lambda: utils.export_pporc_annotation(
+                self, "rec", self._current_export_scope()
+            ),
             None,
             icon=upload_export_icon,
             tip=self.tr("Export Custom PPOCR Recognition Annotations"),
         )
         export_pporc_kie_annotation = action(
             self.tr("PPOCR KIE"),
-            lambda: utils.export_pporc_annotation(self, "kie"),
+            lambda: utils.export_pporc_annotation(
+                self, "kie", self._current_export_scope()
+            ),
             None,
             icon=upload_export_icon,
             tip=self.tr(
@@ -1546,140 +1578,12 @@ class LabelingWidget(LabelDialog):
         )
         export_vlm_r1_ovd_annotation = action(
             self.tr("VLM-R1 OVD"),
-            lambda: utils.export_vlm_r1_ovd_annotation(self),
+            lambda: utils.export_vlm_r1_ovd_annotation(
+                self, self._current_export_scope()
+            ),
             None,
             icon=upload_export_icon,
             tip=self.tr("Export Custom VLM-R1 OVD Annotations"),
-        )
-
-        # Project export (merge all subfolders under project root)
-        _ep = lambda f, *a: lambda: f(self, *a)
-        export_project_yolo_hbb = action(
-            self.tr("YOLO HBB"),
-            _ep(utils.export_yolo_annotation, "hbb", "project"),
-            None,
-            icon=upload_export_icon,
-            tip=self.tr(
-                "Export YOLO HBB for the whole project (all subfolders)"
-            ),
-        )
-        export_project_yolo_obb = action(
-            self.tr("YOLO OBB"),
-            _ep(utils.export_yolo_annotation, "obb", "project"),
-            None,
-            icon=upload_export_icon,
-            tip=self.tr(
-                "Export YOLO OBB for the whole project (all subfolders)"
-            ),
-        )
-        export_project_yolo_seg = action(
-            self.tr("YOLO Seg"),
-            _ep(utils.export_yolo_annotation, "seg", "project"),
-            None,
-            icon=upload_export_icon,
-            tip=self.tr(
-                "Export YOLO Seg for the whole project (all subfolders)"
-            ),
-        )
-        export_project_yolo_pose = action(
-            self.tr("YOLO Pose"),
-            _ep(utils.export_yolo_annotation, "pose", "project"),
-            None,
-            icon=upload_export_icon,
-            tip=self.tr(
-                "Export YOLO Pose for the whole project (all subfolders)"
-            ),
-        )
-        export_project_voc_det = action(
-            self.tr("VOC Detection"),
-            _ep(utils.export_voc_annotation, "rectangle", "project"),
-            None,
-            icon=upload_export_icon,
-            tip=self.tr("Export VOC det for the whole project"),
-        )
-        export_project_voc_seg = action(
-            self.tr("VOC Segmentation"),
-            _ep(utils.export_voc_annotation, "polygon", "project"),
-            None,
-            icon=upload_export_icon,
-            tip=self.tr("Export VOC seg for the whole project"),
-        )
-        export_project_coco_det = action(
-            self.tr("COCO Detection"),
-            _ep(utils.export_coco_annotation, "rectangle", "project"),
-            None,
-            icon=upload_export_icon,
-            tip=self.tr("Export COCO det for the whole project"),
-        )
-        export_project_coco_seg = action(
-            self.tr("COCO Segmentation"),
-            _ep(utils.export_coco_annotation, "polygon", "project"),
-            None,
-            icon=upload_export_icon,
-            tip=self.tr("Export COCO seg for the whole project"),
-        )
-        export_project_coco_pose = action(
-            self.tr("COCO Keypoints"),
-            _ep(utils.export_coco_annotation, "pose", "project"),
-            None,
-            icon=upload_export_icon,
-            tip=self.tr("Export COCO pose for the whole project"),
-        )
-        export_project_dota = action(
-            self.tr("DOTA"),
-            _ep(utils.export_dota_annotation, "project"),
-            None,
-            icon=upload_export_icon,
-            tip=self.tr("Export DOTA for the whole project"),
-        )
-        export_project_mask = action(
-            self.tr("MASK"),
-            _ep(utils.export_mask_annotation, "project"),
-            None,
-            icon=upload_export_icon,
-            tip=self.tr("Export MASK for the whole project"),
-        )
-        export_project_odvg = action(
-            self.tr("ODVG"),
-            _ep(utils.export_odvg_annotation, "project"),
-            None,
-            icon=upload_export_icon,
-            tip=self.tr("Export ODVG for the whole project"),
-        )
-        export_project_mot = action(
-            self.tr("MOT"),
-            _ep(utils.export_mot_annotation, "mot", "project"),
-            None,
-            icon=upload_export_icon,
-            tip=self.tr("Export MOT for the whole project"),
-        )
-        export_project_mots = action(
-            self.tr("MOTS"),
-            _ep(utils.export_mot_annotation, "mots", "project"),
-            None,
-            icon=upload_export_icon,
-            tip=self.tr("Export MOTS for the whole project"),
-        )
-        export_project_pporc_rec = action(
-            self.tr("PPOCR Rec"),
-            _ep(utils.export_pporc_annotation, "rec", "project"),
-            None,
-            icon=upload_export_icon,
-            tip=self.tr("Export PPOCR Rec for the whole project"),
-        )
-        export_project_pporc_kie = action(
-            self.tr("PPOCR KIE"),
-            _ep(utils.export_pporc_annotation, "kie", "project"),
-            None,
-            icon=upload_export_icon,
-            tip=self.tr("Export PPOCR KIE for the whole project"),
-        )
-        export_project_vlm_r1 = action(
-            self.tr("VLM-R1 OVD"),
-            _ep(utils.export_vlm_r1_ovd_annotation, "project"),
-            None,
-            icon=upload_export_icon,
-            tip=self.tr("Export VLM-R1 OVD for the whole project"),
         )
 
         # Group zoom controls into a list for easier toggling.
@@ -1998,7 +1902,6 @@ class LabelingWidget(LabelDialog):
             language=self.menu(self.tr("Language")),
             upload=self.menu(self.tr("Upload")),
             export=self.menu(self.tr("Export")),
-            export_project=QtWidgets.QMenu(self.tr("Export Project")),
             tool=self.menu(self.tr("Tool")),
             train=self.menu(self.tr("Train")),
             help=self.menu(self.tr("Help")),
@@ -2105,34 +2008,6 @@ class LabelingWidget(LabelDialog):
             ),
         )
         utils.add_actions(
-            self.menus.export_project,
-            (
-                export_project_yolo_hbb,
-                export_project_yolo_obb,
-                export_project_yolo_seg,
-                export_project_yolo_pose,
-                None,
-                export_project_voc_det,
-                export_project_voc_seg,
-                None,
-                export_project_coco_det,
-                export_project_coco_seg,
-                export_project_coco_pose,
-                None,
-                export_project_dota,
-                export_project_mask,
-                export_project_odvg,
-                None,
-                export_project_mot,
-                export_project_mots,
-                None,
-                export_project_pporc_rec,
-                export_project_pporc_kie,
-                None,
-                export_project_vlm_r1,
-            ),
-        )
-        utils.add_actions(
             self.menus.export,
             (
                 export_yolo_hbb_annotation,
@@ -2158,8 +2033,6 @@ class LabelingWidget(LabelDialog):
                 export_pporc_kie_annotation,
                 None,
                 export_vlm_r1_ovd_annotation,
-                None,
-                self.menus.export_project,
             ),
         )
         utils.add_actions(
@@ -5718,6 +5591,36 @@ class LabelingWidget(LabelDialog):
         for _name, full in list_immediate_subdirs(self.project_root):
             merged.extend(utils.scan_all_images(full))
         return natsort.natsorted(merged)
+
+    def collect_training_class_names(self):
+        """Ordered class names for Ultralytics data YAML (classes file, then label list)."""
+        for path in (
+            getattr(self, "project_label_classes_file_path", None),
+            getattr(self, "classes_file", None),
+        ):
+            if path and osp.isfile(path):
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        lines = f.readlines()
+                except OSError:
+                    continue
+                names = []
+                for ln in lines:
+                    s = ln.strip()
+                    if s and not s.startswith("#"):
+                        names.append(s)
+                if names:
+                    return names
+        names = []
+        for item in self.label_list:
+            t = (item.text() or "").strip()
+            if t:
+                names.append(t)
+        return names
+
+    def _current_export_scope(self):
+        """Use project-wide export when a project is open; else current folder list."""
+        return "project" if getattr(self, "project_root", None) else "folder"
 
     def open_file(self, _value=False):
         if not self.may_continue():
